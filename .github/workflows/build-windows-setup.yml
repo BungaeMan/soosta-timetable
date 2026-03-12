@@ -1,0 +1,83 @@
+name: Build Windows Setup
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-setup:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build Windows setup
+        run: npm run make -- --platform win32 --arch x64
+
+      - name: Ensure Windows setup outputs exist
+        run: |
+          $distDir = 'out/make/squirrel.windows/x64'
+          if (-not (Test-Path $distDir)) {
+            throw "Expected Squirrel output directory not found: $distDir"
+          }
+
+          $files = Get-ChildItem $distDir -File | Select-Object -ExpandProperty FullName
+          if (-not $files) {
+            throw "No Windows distributables found in $distDir"
+          }
+
+          Write-Host 'Windows build outputs:'
+          $files | ForEach-Object { Write-Host "- $_" }
+
+      - name: Upload Windows setup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: soosta-timetable-windows-setup-${{ github.ref_name }}
+          path: |
+            out/make/squirrel.windows/x64/*.exe
+            out/make/squirrel.windows/x64/*.nupkg
+            out/make/squirrel.windows/x64/RELEASES
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $files = Get-ChildItem 'out/make/squirrel.windows/x64' -File | Select-Object -ExpandProperty FullName
+
+          gh release view $env:RELEASE_TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:RELEASE_TAG $files --clobber
+          } else {
+            gh release create $env:RELEASE_TAG $files --generate-notes --verify-tag
+          }
