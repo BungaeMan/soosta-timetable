@@ -144,7 +144,6 @@ const INSPECTOR_SPRING_DURATION_MS = 760;
 const SESSION_DRAG_START_DISTANCE_PX = 6;
 const CURRENT_TIME_TICK_MS = 60 * 1000;
 const CURRENT_TIME_TICK_BUFFER_MS = 48;
-const MIN_FITTED_TIMETABLE_PIXELS_PER_MINUTE = 0.72;
 const REMINDER_SWEEP_INTERVAL_MS = 15 * 1000;
 const REMINDER_SWEEP_LOOKBACK_MS = 90 * 1000;
 const REMINDER_CARD_AUTO_DISMISS_MS = 12 * 1000;
@@ -386,7 +385,6 @@ class SoostaApp {
   private currentDragPointer: { clientX: number; clientY: number } | null = null;
   private viewportWidth = 0;
   private viewportHeight = 0;
-  private fittedTimetablePixelsPerMinute: number | null = null;
   private readonly platform: DesktopPlatform = resolveDesktopPlatform();
   private isWindowMaximized = false;
   private unsubscribeWindowMaximized: Unsubscribe | null = null;
@@ -2358,7 +2356,7 @@ class SoostaApp {
                             >
                               <span class="session-block-title">${escapeHtml(session.courseTitle)}</span>
                               ${blockLayout.showTime ? `<span class="session-block-meta session-block-time">${escapeHtml(session.start)}–${escapeHtml(session.end)}</span>` : ''}
-                              ${blockLayout.showLocation ? `<span class="session-block-meta">${escapeHtml(session.location || session.courseLocation || '장소 미정')}</span>` : ''}
+                              ${blockLayout.showLocation ? `<span class="session-block-meta session-block-location">${escapeHtml(session.location || session.courseLocation || '장소 미정')}</span>` : ''}
                               ${session.isConflict && blockLayout.showConflictChip ? '<span class="session-conflict-chip">시간 겹침</span>' : ''}
                             </button>
                           `;
@@ -3200,12 +3198,7 @@ class SoostaApp {
     }
     const snapshot = preserveFocus ? this.captureFocusSnapshot() : null;
     const scrollSnapshots = this.captureScrollSnapshots();
-    let renderPassCount = 0;
-
-    do {
-      this.render();
-      renderPassCount += 1;
-    } while (renderPassCount < 2 && this.syncTimetablePixelsPerMinuteFit());
+    this.render();
 
     this.restoreScrollSnapshots(scrollSnapshots);
     if (snapshot) {
@@ -3810,60 +3803,7 @@ class SoostaApp {
   }
 
   private getTimetablePixelsPerMinute(): number {
-    return this.fittedTimetablePixelsPerMinute ?? getTimetablePixelsPerMinute(this.viewportHeight || this.getViewportHeight());
-  }
-
-  private syncTimetablePixelsPerMinuteFit(): boolean {
-    if (this.isLoading || !this.data) {
-      return false;
-    }
-
-    const board = this.getActiveBoard();
-    const basePixelsPerMinute = getTimetablePixelsPerMinute(this.viewportHeight || this.getViewportHeight());
-
-    if (board.courses.length === 0) {
-      const hadOverride = this.fittedTimetablePixelsPerMinute !== null;
-      this.fittedTimetablePixelsPerMinute = null;
-      return hadOverride;
-    }
-
-    const scroll = this.root.querySelector<HTMLElement>('.timetable-scroll');
-    const head = this.root.querySelector<HTMLElement>('.timetable-head');
-    const grid = this.root.querySelector<HTMLElement>('.timetable-grid');
-
-    if (!scroll || !head || !grid) {
-      return false;
-    }
-
-    const range = getGridRange(board);
-    const totalMinutes = range.endMinutes - range.startMinutes;
-    if (totalMinutes <= 0) {
-      return false;
-    }
-
-    const scrollStyles = window.getComputedStyle(scroll);
-    const gridStyles = window.getComputedStyle(grid);
-    const availableGridHeight =
-      scroll.clientHeight -
-      (Number.parseFloat(scrollStyles.paddingTop) || 0) -
-      (Number.parseFloat(scrollStyles.paddingBottom) || 0);
-    const gap = Number.parseFloat(gridStyles.rowGap || gridStyles.gap) || 0;
-    const desiredBodyHeight = availableGridHeight - head.getBoundingClientRect().height - gap;
-
-    if (!Number.isFinite(desiredBodyHeight) || desiredBodyHeight <= 0) {
-      return false;
-    }
-
-    const fittedPixelsPerMinute = Math.floor((desiredBodyHeight / totalMinutes) * 1000) / 1000;
-    const nextPixelsPerMinute = Math.max(MIN_FITTED_TIMETABLE_PIXELS_PER_MINUTE, fittedPixelsPerMinute);
-    const currentPixelsPerMinute = this.fittedTimetablePixelsPerMinute ?? basePixelsPerMinute;
-
-    if (Math.abs(currentPixelsPerMinute - nextPixelsPerMinute) < 0.01) {
-      return false;
-    }
-
-    this.fittedTimetablePixelsPerMinute = nextPixelsPerMinute;
-    return true;
+    return getTimetablePixelsPerMinute(this.viewportHeight || this.getViewportHeight());
   }
 
   private syncSessionDragToViewport(): void {

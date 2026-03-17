@@ -11,7 +11,6 @@ const TIGHT_LAYOUT_MIN_WIDTH = 1320;
 const COMPACT_SIDE_INSPECTOR_MIN_WIDTH = 1180;
 const SHORT_LAYOUT_MAX_HEIGHT = 1080;
 const STANDARD_TIMETABLE_PIXELS_PER_MINUTE = 1.24;
-const SHORT_TIMETABLE_PIXELS_PER_MINUTE = 0.84;
 
 export const getRendererViewportBand = (viewportWidth: number): RendererViewportBand => {
   if (viewportWidth >= FULL_LAYOUT_MIN_WIDTH) {
@@ -29,24 +28,21 @@ export const getRendererViewportHeightBand = (viewportHeight: number): RendererV
   viewportHeight <= SHORT_LAYOUT_MAX_HEIGHT ? 'short' : 'tall';
 
 export const getTimetablePixelsPerMinute = (viewportHeight = Number.POSITIVE_INFINITY): number => {
-  return getRendererViewportHeightBand(viewportHeight) === 'short'
-    ? SHORT_TIMETABLE_PIXELS_PER_MINUTE
-    : STANDARD_TIMETABLE_PIXELS_PER_MINUTE;
+  void viewportHeight;
+  return STANDARD_TIMETABLE_PIXELS_PER_MINUTE;
 };
 
 export const getRendererLayout = (viewportWidth: number, viewportHeight = Number.POSITIVE_INFINITY) => {
   const viewportBand = getRendererViewportBand(viewportWidth);
   const viewportHeightBand = getRendererViewportHeightBand(viewportHeight);
-  const prefersCompactDensity = viewportHeightBand === 'short';
-  const fullTimetableDensity: TimetableDensity = prefersCompactDensity ? 'compact' : 'standard';
-  const fullSidebarDensity = prefersCompactDensity ? 'tight' : 'standard';
+  const fullSidebarDensity = viewportHeightBand === 'short' ? 'tight' : 'standard';
 
   if (viewportBand === 'full') {
     return {
       viewportBand,
       viewportHeightBand,
       shellLayoutMode: 'three-column' as const,
-      timetableDensity: fullTimetableDensity,
+      timetableDensity: 'standard' as const,
       sidebarDensity: fullSidebarDensity,
       inspectorPlacement: 'side' as const,
       preserveMainHorizontalScrollbarAvoidance: true,

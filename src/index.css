@@ -131,6 +131,7 @@ select:focus-visible {
   --content-gap: 20px;
   --time-axis-width: 72px;
   --timetable-gap: 10px;
+  --timetable-day-min-width: 156px;
   --session-inline-gap: 10px;
   --main-plan-max-height: min(1040px, calc(100dvh - 236px));
   --course-list-min-height: clamp(320px, 38dvh, 460px);
@@ -141,6 +142,7 @@ select:focus-visible {
   --content-gap: 18px;
   --time-axis-width: 64px;
   --timetable-gap: 8px;
+  --timetable-day-min-width: 148px;
   --session-inline-gap: 8px;
 }
 
@@ -148,6 +150,7 @@ select:focus-visible {
   --content-gap: 16px;
   --time-axis-width: 56px;
   --timetable-gap: 6px;
+  --timetable-day-min-width: 136px;
   --session-inline-gap: 6px;
 }
 
@@ -1915,12 +1918,13 @@ textarea {
   flex-direction: column;
   gap: var(--timetable-gap);
   min-width: 0;
+  width: max(100%, calc(var(--time-axis-width) + (var(--timetable-day-min-width) * 6) + (var(--timetable-gap) * 6)));
 }
 
 .timetable-head,
 .timetable-body {
   display: grid;
-  grid-template-columns: var(--time-axis-width) repeat(6, minmax(0, 1fr));
+  grid-template-columns: var(--time-axis-width) repeat(6, minmax(var(--timetable-day-min-width), 1fr));
   gap: var(--timetable-gap);
   min-width: 0;
 }
@@ -2134,6 +2138,10 @@ textarea {
 .session-block-time {
   font-size: calc(var(--session-block-meta-size) + 2px);
   font-weight: 600;
+}
+
+.session-block-location {
+  font-size: calc(var(--session-block-meta-size) + 1px);
 }
 
 .session-block .session-conflict-chip {

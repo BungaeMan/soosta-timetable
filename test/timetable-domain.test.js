@@ -856,9 +856,11 @@ test('timetable session blocks clamp overflowing copy inside constrained cells',
   assert.match(rendererAppSource, /const blockLayout = getSessionBlockLayout\(blockHeight, session\.widthPercent, session\.courseTitle\.length\)/);
   assert.match(rendererAppSource, /data-density="\$\{blockLayout\.density\}"/);
   assert.match(rendererAppSource, /session-block-meta session-block-time/);
+  assert.match(rendererAppSource, /session-block-meta session-block-location/);
   assert.match(indexCssSource, /\.session-block\s*\{[\s\S]*overflow: hidden;/);
   assert.match(indexCssSource, /\.session-block-title\s*\{[\s\S]*-webkit-line-clamp: var\(--session-block-title-lines, 1\)/);
   assert.match(indexCssSource, /\.session-block-time\s*\{[\s\S]*font-size: calc\(var\(--session-block-meta-size\) \+ 2px\);[\s\S]*font-weight: 600;/);
+  assert.match(indexCssSource, /\.session-block-location\s*\{[\s\S]*font-size: calc\(var\(--session-block-meta-size\) \+ 1px\);/);
 });
 
 test('timetable footer legend is removed so the grid can use the freed vertical space', () => {
@@ -867,18 +869,21 @@ test('timetable footer legend is removed so the grid can use the freed vertical 
   assert.match(indexCssSource, /\.timetable-scroll\s*\{[\s\S]*padding-bottom: 0;/);
 });
 
-test('renderer fits the timetable body to the available main plan height without leaving a 1080p inner scroll behind', () => {
-  assert.match(rendererAppSource, /renderPassCount < 2 && this\.syncTimetablePixelsPerMinuteFit\(\)/);
-  assert.match(rendererAppSource, /private syncTimetablePixelsPerMinuteFit\(\): boolean/);
-  assert.match(rendererAppSource, /const desiredBodyHeight = availableGridHeight - head\.getBoundingClientRect\(\)\.height - gap;/);
-  assert.match(rendererAppSource, /const MIN_FITTED_TIMETABLE_PIXELS_PER_MINUTE = 0\.72;/);
-  assert.match(rendererAppSource, /const fittedPixelsPerMinute = Math\.floor\(\(desiredBodyHeight \/ totalMinutes\) \* 1000\) \/ 1000;/);
-  assert.match(rendererAppSource, /const nextPixelsPerMinute = Math\.max\(MIN_FITTED_TIMETABLE_PIXELS_PER_MINUTE, fittedPixelsPerMinute\);/);
-  assert.doesNotMatch(rendererAppSource, /Math\.max\(basePixelsPerMinute, Number\(\(desiredBodyHeight \/ totalMinutes\)\.toFixed\(3\)\)\)/);
+test('renderer keeps the timetable readable and lets the timetable panel scroll instead of shrinking the grid to fit', () => {
+  assert.doesNotMatch(rendererAppSource, /syncTimetablePixelsPerMinuteFit/);
+  assert.match(
+    rendererAppSource,
+    /private getTimetablePixelsPerMinute\(\): number \{\s*return getTimetablePixelsPerMinute\(this\.viewportHeight \|\| this\.getViewportHeight\(\)\);\s*\}/,
+  );
   assert.match(getCssBlock(".app-shell[data-viewport-height-band='short']"), /--main-plan-max-height: min\(920px, calc\(100dvh - 184px\)\);/);
+  assert.match(indexCssSource, /\.timetable-grid\s*\{[\s\S]*width:\s*max\(100%, calc\(var\(--time-axis-width\) \+ \(var\(--timetable-day-min-width\) \* 6\) \+ \(var\(--timetable-gap\) \* 6\)\)\);/);
+  assert.match(
+    indexCssSource,
+    /\.timetable-head,\s*\.timetable-body\s*\{[\s\S]*grid-template-columns:\s*var\(--time-axis-width\) repeat\(6, minmax\(var\(--timetable-day-min-width\), 1fr\)\);/,
+  );
 });
 
-test('initial renderer load uses the same fitted timetable pass as later rerenders so the main plan height does not jump after the first edit', () => {
+test('initial renderer load still renders through renderFrame so layout state stays consistent after the first edit', () => {
   assert.match(
     rendererAppSource,
     /finally \{\s*this\.isLoading = false;\s*this\.renderFrame\(\);\s*this\.startCurrentTimeTicker\(\);/,
@@ -1534,7 +1539,7 @@ test('getRendererLayout maps viewport widths to the approved breakpoint bands', 
     viewportBand: 'full',
     viewportHeightBand: 'short',
     shellLayoutMode: 'three-column',
-    timetableDensity: 'compact',
+    timetableDensity: 'standard',
     sidebarDensity: 'tight',
     inspectorPlacement: 'side',
     preserveMainHorizontalScrollbarAvoidance: true,
@@ -1581,10 +1586,10 @@ test('getRendererLayout maps viewport widths to the approved breakpoint bands', 
   });
 });
 
-test('getTimetablePixelsPerMinute compresses short 1080p layouts without shrinking taller viewports', () => {
+test('getTimetablePixelsPerMinute keeps the readable timetable scale even on short layouts', () => {
   assert.equal(getTimetablePixelsPerMinute(1200), 1.24);
-  assert.equal(getTimetablePixelsPerMinute(1080), 0.84);
-  assert.equal(getTimetablePixelsPerMinute(900), 0.84);
+  assert.equal(getTimetablePixelsPerMinute(1080), 1.24);
+  assert.equal(getTimetablePixelsPerMinute(900), 1.24);
   assert.equal(getTimetablePixelsPerMinute(Number.POSITIVE_INFINITY), 1.24);
 });
 
