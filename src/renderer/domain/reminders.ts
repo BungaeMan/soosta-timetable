@@ -21,6 +21,7 @@ const DAY_TO_JS_DAY = {
 } as const;
 
 const MINUTE_IN_MS = 60 * 1000;
+const DEFAULT_INITIAL_SWEEP_LOOKBACK_MS = 90 * 1000;
 
 export interface UpcomingSessionOccurrence extends AgendaItem {
   startAt: string;
@@ -36,6 +37,18 @@ export interface LectureReminderEvent {
   session: UpcomingSessionOccurrence;
   nativePayload: NativeLectureReminderPayload;
 }
+
+export const getReminderSweepStartMs = (
+  previousSweepAtMs: number,
+  completedAtMs: number,
+  initialLookbackMs = DEFAULT_INITIAL_SWEEP_LOOKBACK_MS,
+): number => {
+  if (!Number.isFinite(previousSweepAtMs) || previousSweepAtMs <= 0) {
+    return completedAtMs - initialLookbackMs;
+  }
+
+  return Math.min(previousSweepAtMs, completedAtMs);
+};
 
 const createOccurrenceDate = (jsDay: number, minutes: number, now: Date): Date => {
   const occurrence = new Date(now);

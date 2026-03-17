@@ -33,6 +33,13 @@ const jsDayToDayKey = (day: number) => {
   return null;
 };
 
+export interface CurrentTimeIndicatorState {
+  day: DayKey;
+  currentMinutes: number;
+  offsetMinutes: number;
+  label: string;
+}
+
 export const flattenBoardSessions = (board: TimetableBoard): FlattenedSession[] =>
   board.courses.flatMap((course) =>
     course.sessions.map((session) => ({
@@ -188,33 +195,25 @@ export const getGridRange = (board: TimetableBoard): { startMinutes: number; end
   };
 };
 
-export const getCurrentTimeSlotHighlight = (
-  gridStartMinutes: number,
-  gridEndMinutes: number,
+export const getCurrentTimeIndicatorState = (
+  range: { startMinutes: number; endMinutes: number },
   now = new Date(),
-): { day: DayKey; startMinutes: number; endMinutes: number } | null => {
+): CurrentTimeIndicatorState | null => {
   const day = jsDayToDayKey(now.getDay());
   if (!day) {
     return null;
   }
 
   const currentMinutes = now.getHours() * 60 + now.getMinutes();
-  if (currentMinutes < gridStartMinutes || currentMinutes >= gridEndMinutes) {
-    return null;
-  }
-
-  const slotStartMinutes =
-    gridStartMinutes + Math.floor((currentMinutes - gridStartMinutes) / TIME_STEP_MINUTES) * TIME_STEP_MINUTES;
-  const slotEndMinutes = Math.min(gridEndMinutes, slotStartMinutes + TIME_STEP_MINUTES);
-
-  if (slotEndMinutes <= slotStartMinutes) {
+  if (currentMinutes < range.startMinutes || currentMinutes >= range.endMinutes) {
     return null;
   }
 
   return {
     day,
-    startMinutes: slotStartMinutes,
-    endMinutes: slotEndMinutes,
+    currentMinutes,
+    offsetMinutes: currentMinutes - range.startMinutes,
+    label: minutesToTime(currentMinutes),
   };
 };
 

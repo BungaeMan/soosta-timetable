@@ -1,6 +1,6 @@
 import { COLOR_PALETTE, TIME_STEP_MINUTES } from '../../shared/constants';
 import { createBoard, createCourse, createSession, generateId } from '../../shared/data';
-import type { Course, CourseSession, TimetableBoard } from '../../shared/types';
+import type { AppData, Course, CourseSession, TimetableBoard } from '../../shared/types';
 import { timeToMinutes } from './time';
 
 export const createBlankSession = (): CourseSession =>
@@ -52,15 +52,9 @@ export const duplicateBoard = (board: TimetableBoard): TimetableBoard => {
 
 export const normalizeCourseDraft = (course: Course): Course => ({
   ...course,
-  title: course.title.trim(),
-  code: course.code.trim(),
-  instructor: course.instructor.trim(),
-  location: course.location.trim(),
-  memo: course.memo.trim(),
   credits: typeof course.credits === 'number' && Number.isFinite(course.credits) ? course.credits : null,
   sessions: course.sessions.map((session) => ({
     ...session,
-    location: session.location.trim(),
   })),
 });
 
@@ -98,4 +92,33 @@ export const validateCourse = (course: Course): string[] => {
   });
 
   return issues;
+};
+
+export const restoreActiveBoardFromPersisted = (
+  currentData: AppData,
+  persistedData: AppData,
+): AppData => {
+  const persistedActiveBoard =
+    persistedData.boards.find((board) => board.id === currentData.activeBoardId) ??
+    persistedData.boards.find((board) => board.id === persistedData.activeBoardId);
+
+  if (!persistedActiveBoard) {
+    return currentData;
+  }
+
+  return {
+    ...currentData,
+    activeBoardId: persistedActiveBoard.id,
+    boards: currentData.boards.map((board) =>
+      board.id === currentData.activeBoardId
+        ? {
+            ...persistedActiveBoard,
+            courses: persistedActiveBoard.courses.map((course) => ({
+              ...course,
+              sessions: course.sessions.map((session) => ({ ...session })),
+            })),
+          }
+        : board,
+    ),
+  };
 };

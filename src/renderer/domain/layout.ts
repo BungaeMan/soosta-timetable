@@ -8,6 +8,7 @@ export type DesktopPlatform = NodeJS.Platform | 'linux' | 'darwin' | 'win32';
 
 const FULL_LAYOUT_MIN_WIDTH = 1440;
 const TIGHT_LAYOUT_MIN_WIDTH = 1320;
+const COMPACT_SIDE_INSPECTOR_MIN_WIDTH = 1180;
 const SHORT_LAYOUT_MAX_HEIGHT = 1080;
 const STANDARD_TIMETABLE_PIXELS_PER_MINUTE = 1.24;
 const SHORT_TIMETABLE_PIXELS_PER_MINUTE = 0.84;
@@ -64,6 +65,18 @@ export const getRendererLayout = (viewportWidth: number, viewportHeight = Number
     };
   }
 
+  if (viewportWidth >= COMPACT_SIDE_INSPECTOR_MIN_WIDTH) {
+    return {
+      viewportBand,
+      viewportHeightBand,
+      shellLayoutMode: 'three-column' as const,
+      timetableDensity: 'compact' as const,
+      sidebarDensity: 'tight' as const,
+      inspectorPlacement: 'side' as const,
+      preserveMainHorizontalScrollbarAvoidance: true,
+    };
+  }
+
   return {
     viewportBand,
     viewportHeightBand,
@@ -76,11 +89,9 @@ export const getRendererLayout = (viewportWidth: number, viewportHeight = Number
 };
 
 export const getPlatformControlRail = (platform: DesktopPlatform): PlatformControlRail => {
-  void platform;
-  return 'window-controls-right';
+  return platform === 'darwin' ? 'traffic-lights-left' : 'window-controls-right';
 };
 
 export const getPlatformControlRailSide = (platform: DesktopPlatform): ControlRailSide => {
-  void platform;
-  return 'right';
+  return platform === 'darwin' ? 'left' : 'right';
 };

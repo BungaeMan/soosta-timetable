@@ -1,4 +1,4 @@
-import { APP_NAME, DAY_LABELS, DAY_ORDER, LECTURE_REMINDER_LEAD_MINUTES, TIME_STEP_MINUTES } from '../shared/constants';
+import { APP_NAME, DAY_LABELS, DAY_ORDER, LECTURE_REMINDER_LEAD_MINUTES } from '../shared/constants';
 import { generateId } from '../shared/data';
 import {
   formatLectureReminderLeadMinutes,
@@ -25,19 +25,24 @@ import {
   getRendererLayout,
   getTimetablePixelsPerMinute,
 } from './domain/layout';
-import { getDueLectureReminderEvents, getNextUpcomingSessionOccurrence } from './domain/reminders';
+import {
+  getDueLectureReminderEvents,
+  getNextUpcomingSessionOccurrence,
+  getReminderSweepStartMs,
+} from './domain/reminders';
 import {
   createBlankBoard,
   createBlankCourse,
   createBlankSession,
   duplicateBoard,
   normalizeCourseDraft,
+  restoreActiveBoardFromPersisted,
   validateCourse,
 } from './domain/model';
 import {
+  getCurrentTimeIndicatorState,
   formatFreeWindow,
   getBoardStats,
-  getCurrentTimeSlotHighlight,
   getFreeWindows,
   getGridRange,
   getNextSession,
@@ -49,7 +54,22 @@ import {
   swapBoardSessions,
   updateBoardSessionSchedule,
 } from './domain/timetable';
-import { formatDuration, minutesToTime, timeToMinutes } from './domain/time';
+import {
+  coerceMeridiemTimeParts,
+  coerceTimeToOptions,
+  formatDuration,
+  getNextSessionTimeMenuSegment,
+  type GenericMeridiem,
+  getSessionEndTimeOptions,
+  getSessionEndTimeOptionsAfterStart,
+  getSessionStartTimeOptions,
+  minutesToTime,
+  resolveSessionTimeMenuSegment,
+  splitMeridiemTimeParts,
+  type TimeWidgetMenuSegment,
+  type TimeWidgetSegment,
+  timeToMinutes,
+} from './domain/time';
 
 type BannerTone = 'success' | 'error' | 'info';
 type BannerVisibility = 'hidden' | 'entering' | 'visible' | 'leaving';
@@ -80,6 +100,34 @@ interface SessionContextMenu {
   locationLabel: string;
 }
 
+type SessionTimeFieldName = 'session-start' | 'session-end';
+type SessionTimeWidgetSegment = TimeWidgetSegment;
+type SessionTimeMenuSegment = TimeWidgetMenuSegment;
+type SessionTimeWidgetCloseReason = 'escape' | 'enter' | 'minute' | 'outside' | 'toggle' | 'render' | 'resize' | 'unload';
+
+interface SessionTimeWidgetState {
+  sessionId: string;
+  fieldName: SessionTimeFieldName;
+  committedValue: string;
+  draftValue: string;
+  openSegment: SessionTimeMenuSegment | null;
+}
+
+interface PendingSessionTimeTarget {
+  sessionId: string;
+  fieldName: SessionTimeFieldName;
+}
+
+type SessionBlockDensity = 'spacious' | 'compact' | 'minimal';
+
+interface SessionBlockLayout {
+  density: SessionBlockDensity;
+  titleLines: 1 | 2;
+  showTime: boolean;
+  showLocation: boolean;
+  showConflictChip: boolean;
+}
+
 const colorPattern = /^#(?:[0-9a-fA-F]{3}){1,2}$/;
 const AUTOSAVE_DELAY_MS = 360;
 const BANNER_EXIT_DURATION_MS = 560;
@@ -91,10 +139,12 @@ const BANNER_AUTO_DISMISS_MS: Record<BannerTone, number> = {
 const SCROLLBAR_IDLE_DELAY_MS = 720;
 const SCROLLBAR_ACTIVE_CLASS = 'is-scrollbar-active';
 const SCROLLABLE_SELECTOR = '.app-layout, .timetable-scroll, .course-list-scroll, textarea';
-const SCROLL_SNAPSHOT_SELECTORS = ['.timetable-scroll'];
-const TIME_INPUT_STEP_SECONDS = TIME_STEP_MINUTES * 60;
+const SCROLL_SNAPSHOT_SELECTORS = ['.app-layout', '.timetable-scroll'];
 const INSPECTOR_SPRING_DURATION_MS = 760;
 const SESSION_DRAG_START_DISTANCE_PX = 6;
+const CURRENT_TIME_TICK_MS = 60 * 1000;
+const CURRENT_TIME_TICK_BUFFER_MS = 48;
+const MIN_FITTED_TIMETABLE_PIXELS_PER_MINUTE = 0.72;
 const REMINDER_SWEEP_INTERVAL_MS = 15 * 1000;
 const REMINDER_SWEEP_LOOKBACK_MS = 90 * 1000;
 const REMINDER_CARD_AUTO_DISMISS_MS = 12 * 1000;
@@ -105,6 +155,7 @@ interface FocusSnapshot {
   selectionStart: number | null;
   selectionEnd: number | null;
   sessionId: string | null;
+  rawValue: string | null;
 }
 
 interface ScrollSnapshot {
@@ -187,6 +238,52 @@ const isCompositionTextField = (target: EventTarget | null): target is HTMLInput
   return ['text', 'search', 'email', 'url', 'tel', 'password'].includes(target.type);
 };
 
+const SESSION_START_TIME_OPTIONS = getSessionStartTimeOptions();
+const SESSION_END_TIME_OPTIONS = getSessionEndTimeOptions();
+const SESSION_TIME_MERIDIEMS: GenericMeridiem[] = ['AM', 'PM'];
+const SESSION_TIME_MERIDIEM_LABELS: Record<GenericMeridiem, string> = {
+  AM: '오전',
+  PM: '오후',
+};
+const SESSION_TIME_SEGMENT_LABELS: Record<SessionTimeWidgetSegment, string> = {
+  meridiem: '오전/오후',
+  hour: '시',
+  minute: '분',
+};
+const SESSION_TIME_FIELD_NAMES: SessionTimeFieldName[] = ['session-start', 'session-end'];
+
+const isSessionTimeFieldName = (value: string | undefined): value is SessionTimeFieldName =>
+  value ? SESSION_TIME_FIELD_NAMES.includes(value as SessionTimeFieldName) : false;
+
+const getSessionTimeOptions = (fieldName: SessionTimeFieldName, pairedValue?: string): string[] => {
+  if (fieldName === 'session-end' && pairedValue) {
+    return getSessionEndTimeOptionsAfterStart(pairedValue);
+  }
+
+  return fieldName === 'session-start' ? SESSION_START_TIME_OPTIONS : SESSION_END_TIME_OPTIONS;
+};
+
+const getPairedSessionTimeFieldName = (fieldName: SessionTimeFieldName): SessionTimeFieldName =>
+  fieldName === 'session-start' ? 'session-end' : 'session-start';
+
+const formatSessionTimeTriggerLabel = (time: string): string => {
+  const { meridiem, hour, minute } = splitMeridiemTimeParts(time);
+  return `${SESSION_TIME_MERIDIEM_LABELS[meridiem]} ${Number(hour)}:${minute}`;
+};
+
+const getSessionTimeHourOptions = (times: string[], meridiem: GenericMeridiem): string[] =>
+  [...new Set(times.filter((time) => splitMeridiemTimeParts(time).meridiem === meridiem).map((time) => splitMeridiemTimeParts(time).hour))];
+
+const getSessionTimeMinuteOptions = (times: string[], meridiem: GenericMeridiem, hour: string): string[] =>
+  [
+    ...new Set(
+      times
+        .map((time) => splitMeridiemTimeParts(time))
+        .filter((time) => time.meridiem === meridiem && time.hour === hour)
+        .map((time) => time.minute),
+    ),
+  ];
+
 const getCurrentWeekday = (now = new Date()): DayKey | null => {
   const jsDay = now.getDay();
   if (jsDay >= 1 && jsDay <= 6) {
@@ -216,6 +313,31 @@ const resolveDesktopPlatform = (): DesktopPlatform => {
   return 'linux';
 };
 
+const getSessionBlockLayout = (blockHeight: number, widthPercent: number, titleLength: number): SessionBlockLayout => {
+  const isVeryShort = blockHeight < 52;
+  const isShort = blockHeight < 72;
+  const isVeryNarrow = widthPercent < 40;
+  const isSpacious = blockHeight >= 112 && widthPercent >= 58 && titleLength <= 28;
+
+  if (isVeryShort || (isShort && isVeryNarrow)) {
+    return {
+      density: 'minimal',
+      titleLines: 1,
+      showTime: false,
+      showLocation: false,
+      showConflictChip: false,
+    };
+  }
+
+  return {
+    density: isSpacious ? 'spacious' : 'compact',
+    titleLines: isSpacious ? 2 : 1,
+    showTime: true,
+    showLocation: blockHeight >= 82 && widthPercent >= 58,
+    showConflictChip: isSpacious && blockHeight >= 124 && widthPercent >= 66,
+  };
+};
+
 const renderIcon = (name: string): string => {
   const paths: Record<string, string> = {
     spark: '<path d="M12 2l1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8L12 2Z" /><path d="M19.5 16.5l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6Z" />',
@@ -229,6 +351,8 @@ const renderIcon = (name: string): string => {
     copy: '<rect x="9" y="9" width="10" height="10" rx="2" /><path d="M7 15H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v1" />',
     check: '<path d="m5 13 4 4L19 7" />',
     edit: '<path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />',
+    reset: '<path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 4v5h5" />',
+    'collapse-right': '<path d="m10 7 5 5-5 5" /><path d="M18 5v14" />',
     minimize: '<path d="M5 12h14" />',
     maximize: '<rect x="5" y="5" width="14" height="14" rx="2" />',
     restore:
@@ -262,10 +386,12 @@ class SoostaApp {
   private currentDragPointer: { clientX: number; clientY: number } | null = null;
   private viewportWidth = 0;
   private viewportHeight = 0;
+  private fittedTimetablePixelsPerMinute: number | null = null;
   private readonly platform: DesktopPlatform = resolveDesktopPlatform();
   private isWindowMaximized = false;
   private unsubscribeWindowMaximized: Unsubscribe | null = null;
   private resizeFrame: number | null = null;
+  private inspectorCloseButtonFrame: number | null = null;
   private bannerAnimationFrame: number | null = null;
   private bannerAutoDismissTimer: ReturnType<typeof setTimeout> | null = null;
   private bannerAutoDismissStartedAt: number | null = null;
@@ -283,6 +409,9 @@ class SoostaApp {
   private inspectorOpenFrame: number | null = null;
   private suppressSessionBlockClick = false;
   private suppressSessionBlockClickTimer: ReturnType<typeof setTimeout> | null = null;
+  private currentTimeTicker: number | null = null;
+  private currentTimeIndicatorSyncFrame: number | null = null;
+  private layoutResizeObserver: ResizeObserver | null = null;
   private reminderSweepTimer: ReturnType<typeof setInterval> | null = null;
   private reminderCardTimer: ReturnType<typeof setTimeout> | null = null;
   private lastReminderSweepAt = Date.now();
@@ -293,6 +422,9 @@ class SoostaApp {
   private readonly scrollHideTimers = new WeakMap<HTMLElement, number>();
   private sessionContextMenu: SessionContextMenu | null = null;
   private sessionContextAnchor: HTMLElement | null = null;
+  private sessionTimeWidget: SessionTimeWidgetState | null = null;
+  private pendingSessionTimeFocus: PendingSessionTimeTarget | null = null;
+  private pendingSessionTimeOpen: PendingSessionTimeTarget | null = null;
 
   public constructor(root: HTMLDivElement) {
     this.root = root;
@@ -302,6 +434,7 @@ class SoostaApp {
     this.viewportWidth = this.getViewportWidth();
     this.viewportHeight = this.getViewportHeight();
     this.renderShell();
+    this.bindLayoutResizeObserver();
     this.bindEvents();
     await this.initWindowChromeState();
 
@@ -313,9 +446,10 @@ class SoostaApp {
       this.showBanner({ tone: 'error', text: this.getErrorMessage(error) });
     } finally {
       this.isLoading = false;
-      this.render();
+      this.renderFrame();
+      this.startCurrentTimeTicker();
       this.startReminderSweepLoop();
-      this.runReminderSweep(true);
+      this.runReminderSweep();
     }
   }
 
@@ -332,6 +466,23 @@ class SoostaApp {
     }
   }
 
+  private bindLayoutResizeObserver(): void {
+    if (typeof ResizeObserver === 'undefined') {
+      return;
+    }
+
+    const contentSlot = this.root.querySelector<HTMLElement>('#content-slot');
+    if (!contentSlot) {
+      return;
+    }
+
+    this.layoutResizeObserver?.disconnect();
+    this.layoutResizeObserver = new ResizeObserver(() => {
+      this.queueCurrentTimeIndicatorSync();
+    });
+    this.layoutResizeObserver.observe(contentSlot);
+  }
+
   private bindEvents(): void {
     this.root.addEventListener('click', (event) => {
       const target = event.target as HTMLElement;
@@ -344,7 +495,15 @@ class SoostaApp {
       }
 
       if (this.data && this.shouldClearCourseSelectionFromMainPlanClick(target)) {
+        if (!this.confirmDiscardInvalidInspectorDraft()) {
+          return;
+        }
         this.clearCourseSelection();
+      }
+
+      if (this.handleSessionTimeWidgetClick(target)) {
+        event.preventDefault();
+        return;
       }
 
       const actionElement = target.closest<HTMLElement>('[data-action]');
@@ -445,6 +604,7 @@ class SoostaApp {
       'scroll',
       () => {
         this.closeSessionContextMenu();
+        this.queueInspectorCloseButtonPositionSync();
       },
       true,
     );
@@ -466,6 +626,7 @@ class SoostaApp {
       this.resizeFrame = window.requestAnimationFrame(() => {
         this.resizeFrame = null;
         this.closeSessionContextMenu();
+        this.closeSessionTimeWidget({ reason: 'resize' });
         const nextViewportWidth = this.getViewportWidth();
         const nextViewportHeight = this.getViewportHeight();
         if (nextViewportWidth === this.viewportWidth && nextViewportHeight === this.viewportHeight) {
@@ -478,14 +639,38 @@ class SoostaApp {
       });
     });
     window.addEventListener('focus', () => {
+      this.startCurrentTimeTicker();
       this.runReminderSweep();
     });
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden) {
+        this.startCurrentTimeTicker();
         this.runReminderSweep();
       }
     });
     window.addEventListener('keydown', (event) => {
+      if (this.sessionTimeWidget && event.key === 'Escape') {
+        event.preventDefault();
+        this.closeSessionTimeWidget({ reason: 'escape' });
+        return;
+      }
+
+      if (this.sessionTimeWidget && event.key === 'Enter') {
+        const activeField = this.getSessionTimeFieldElement(this.sessionTimeWidget.sessionId, this.sessionTimeWidget.fieldName);
+        const target = event.target;
+        if (
+          activeField &&
+          target instanceof Node &&
+          activeField.contains(target) &&
+          (!(target instanceof HTMLElement) ||
+            (!target.closest('[data-session-time-select-trigger]') && !target.closest('[data-session-time-option]')))
+        ) {
+          event.preventDefault();
+          this.closeSessionTimeWidget({ reason: 'enter' });
+          return;
+        }
+      }
+
       if (event.key === 'Escape' && this.sessionContextMenu) {
         this.closeSessionContextMenu();
         return;
@@ -518,7 +703,11 @@ class SoostaApp {
         window.cancelAnimationFrame(this.resizeFrame);
         this.resizeFrame = null;
       }
+      this.layoutResizeObserver?.disconnect();
+      this.layoutResizeObserver = null;
+      this.cancelQueuedCurrentTimeIndicatorSync();
       this.clearBannerTimers();
+      this.stopCurrentTimeTicker();
       this.stopReminderSweepLoop();
       this.clearReminderCardTimer();
       this.composingField = null;
@@ -529,6 +718,7 @@ class SoostaApp {
       this.cancelInspectorCloseAnimation();
       this.resetSessionDrag();
       this.closeSessionContextMenu();
+      this.closeSessionTimeWidget({ reason: 'unload' });
     });
   }
 
@@ -563,6 +753,8 @@ class SoostaApp {
       this.query('#content-slot').innerHTML = this.renderLoadingCard('주간 레이아웃을 불러오는 중입니다.');
       this.query('#inspector-slot').innerHTML = this.renderLoadingCard('에디터를 정리하고 있어요.');
       this.syncScrollbars();
+      this.syncCurrentTimeIndicator();
+      this.queueInspectorCloseButtonPositionSync();
       return;
     }
 
@@ -572,6 +764,93 @@ class SoostaApp {
     this.query('#content-slot').innerHTML = this.renderContent();
     this.query('#inspector-slot').innerHTML = this.renderInspector(inspectorState);
     this.syncScrollbars();
+    this.syncCurrentTimeIndicator();
+    this.queueInspectorCloseButtonPositionSync();
+  }
+
+  private startCurrentTimeTicker(): void {
+    this.stopCurrentTimeTicker();
+    this.syncCurrentTimeIndicator();
+    this.queueCurrentTimeIndicatorTick();
+  }
+
+  private stopCurrentTimeTicker(): void {
+    if (this.currentTimeTicker !== null) {
+      window.clearTimeout(this.currentTimeTicker);
+      this.currentTimeTicker = null;
+    }
+  }
+
+  private queueCurrentTimeIndicatorSync(): void {
+    if (this.currentTimeIndicatorSyncFrame !== null) {
+      return;
+    }
+
+    this.currentTimeIndicatorSyncFrame = window.requestAnimationFrame(() => {
+      this.currentTimeIndicatorSyncFrame = null;
+      this.syncCurrentTimeIndicator();
+    });
+  }
+
+  private cancelQueuedCurrentTimeIndicatorSync(): void {
+    if (this.currentTimeIndicatorSyncFrame !== null) {
+      window.cancelAnimationFrame(this.currentTimeIndicatorSyncFrame);
+      this.currentTimeIndicatorSyncFrame = null;
+    }
+  }
+
+  private queueCurrentTimeIndicatorTick(now = new Date()): void {
+    const elapsedThisMinuteMs = now.getSeconds() * 1000 + now.getMilliseconds();
+    const delayUntilNextMinute = Math.max(1000, CURRENT_TIME_TICK_MS - elapsedThisMinuteMs + CURRENT_TIME_TICK_BUFFER_MS);
+
+    this.currentTimeTicker = window.setTimeout(() => {
+      this.currentTimeTicker = null;
+      this.syncCurrentTimeIndicator();
+      this.queueCurrentTimeIndicatorTick();
+    }, delayUntilNextMinute);
+  }
+
+  private syncCurrentTimeIndicator(now = new Date()): void {
+    const dayHeads = [...this.root.querySelectorAll<HTMLElement>('[data-day-head]')];
+    const dayColumns = [...this.root.querySelectorAll<HTMLElement>('[data-day-column]')];
+    const indicator = this.root.querySelector<HTMLElement>('[data-current-time-indicator]');
+
+    dayHeads.forEach((head) => head.classList.remove('is-current-time-day'));
+
+    if (indicator) {
+      indicator.hidden = true;
+      indicator.style.removeProperty('top');
+      indicator.style.removeProperty('left');
+      indicator.style.removeProperty('width');
+    }
+
+    if (!this.data) {
+      return;
+    }
+
+    const board = this.getActiveBoard();
+    if (board.courses.length === 0) {
+      return;
+    }
+
+    const range = getGridRange(board);
+    const indicatorState = getCurrentTimeIndicatorState(range, now);
+    if (!indicatorState || !indicator) {
+      return;
+    }
+
+    const dayHead = dayHeads.find((head) => head.dataset.dayHead === indicatorState.day);
+    const dayColumn = dayColumns.find((column) => column.dataset.dayColumn === indicatorState.day);
+    if (!dayColumn) {
+      return;
+    }
+
+    const top = Number((indicatorState.offsetMinutes * this.getTimetablePixelsPerMinute()).toFixed(3));
+    dayHead?.classList.add('is-current-time-day');
+    indicator.hidden = false;
+    indicator.style.top = `${top}px`;
+    indicator.style.left = `${dayColumn.offsetLeft}px`;
+    indicator.style.width = `${dayColumn.offsetWidth}px`;
   }
 
   private renderTopbar(): void {
@@ -617,15 +896,23 @@ class SoostaApp {
   }
 
   private renderWindowControls(): string {
-    const controlOrder = [
-      { action: 'minimize-window', label: '최소화', tone: 'minimize' },
-      { action: 'toggle-maximize-window', label: this.isWindowMaximized ? '복원' : '최대화', tone: 'maximize' },
-      { action: 'close-window', label: '창 닫기', tone: 'close' },
-    ];
+    const controlRail = getPlatformControlRail(this.platform);
+    const controlOrder =
+      controlRail === 'traffic-lights-left'
+        ? [
+            { action: 'close-window', label: '창 닫기', tone: 'close' },
+            { action: 'minimize-window', label: '최소화', tone: 'minimize' },
+            { action: 'toggle-maximize-window', label: this.isWindowMaximized ? '복원' : '최대화', tone: 'maximize' },
+          ]
+        : [
+            { action: 'minimize-window', label: '최소화', tone: 'minimize' },
+            { action: 'toggle-maximize-window', label: this.isWindowMaximized ? '복원' : '최대화', tone: 'maximize' },
+            { action: 'close-window', label: '창 닫기', tone: 'close' },
+          ];
 
     return `
       <div class="topbar-rail topbar-rail-controls">
-        <div class="window-controls">
+        <div class="window-controls window-controls-${controlRail}">
           ${controlOrder
             .map(({ action, label, tone }) => {
               const iconName =
@@ -798,21 +1085,13 @@ class SoostaApp {
     }
   }
 
-  private runReminderSweep(forceRender = false): void {
+  private runReminderSweep(): void {
     const completedAt = Date.now();
-    const startedAt = Math.max(this.lastReminderSweepAt, completedAt - REMINDER_SWEEP_LOOKBACK_MS);
+    const startedAt = getReminderSweepStartMs(this.lastReminderSweepAt, completedAt, REMINDER_SWEEP_LOOKBACK_MS);
     this.lastReminderSweepAt = completedAt;
     const reminderLeadMinutes = this.getLectureReminderLeadMinutes();
 
     if (!this.data || !this.areLectureRemindersEnabled() || reminderLeadMinutes.length === 0) {
-      if (forceRender || !document.hidden) {
-        if (this.composingField) {
-          this.pendingRenderAfterComposition = true;
-        } else {
-          this.renderFrame(true);
-        }
-      }
-
       return;
     }
 
@@ -828,14 +1107,6 @@ class SoostaApp {
       this.presentLectureReminder(event.nativePayload);
       void window.soosta.showLectureReminder(event.nativePayload).catch((): void => undefined);
     });
-
-    if (forceRender || !document.hidden) {
-      if (this.composingField) {
-        this.pendingRenderAfterComposition = true;
-      } else {
-        this.renderFrame(true);
-      }
-    }
   }
 
   private areLectureRemindersEnabled(): boolean {
@@ -1175,7 +1446,6 @@ class SoostaApp {
       <section class="panel-card board-panel">
         <div class="panel-heading">
           <div>
-            <p class="eyebrow">Boards</p>
             <h2>학기 보드</h2>
           </div>
           <button type="button" class="soft-button" data-action="new-board">${renderIcon('plus')}새 시간표</button>
@@ -1220,7 +1490,6 @@ class SoostaApp {
       <section class="panel-card agenda-panel">
         <div class="panel-heading compact">
           <div>
-            <p class="eyebrow">Today</p>
             <h2>오늘 일정</h2>
           </div>
           <span class="panel-hint">${agendaDay ? escapeHtml(DAY_LABELS[agendaDay].full) : '일요일'}</span>
@@ -1231,8 +1500,7 @@ class SoostaApp {
       <section class="panel-card insight-panel">
         <div class="panel-heading compact">
           <div>
-            <p class="eyebrow">Next</p>
-            <h2>다음 움직임</h2>
+            <h2>다음 일정</h2>
           </div>
         </div>
         ${nextSession ? this.renderNextSession(nextSession, remindersEnabled, reminderLeadMinutes) : '<div class="empty-copy">등록된 강의가 없어 다음 일정도 아직 비어 있어요.</div>'}
@@ -1323,7 +1591,6 @@ class SoostaApp {
     const stats = getBoardStats(board);
     const range = getGridRange(board);
     const positioned = getPositionedSessions(board);
-    const currentTimeSlot = getCurrentTimeSlotHighlight(range.startMinutes, range.endMinutes);
     const pixelsPerMinute = this.getTimetablePixelsPerMinute();
     const height = (range.endMinutes - range.startMinutes) * pixelsPerMinute;
     const hours: number[] = [];
@@ -1335,9 +1602,11 @@ class SoostaApp {
       <section class="panel-card hero-panel">
         <div class="panel-heading hero-heading">
           <div>
-            <p class="eyebrow">Week view</p>
-            <h2>${escapeHtml(board.name)}</h2>
-            <p class="hero-copy">${escapeHtml(board.semester)}${board.note ? ` · ${escapeHtml(board.note)}` : ' · 에디토리얼 톤의 데스크톱 시간표'}</p>
+            <div class="hero-title-row">
+              <h2>${escapeHtml(board.name)}</h2>
+              <span class="hero-title-meta">${escapeHtml(board.semester)}</span>
+            </div>
+            ${board.note ? `<p class="hero-copy">${escapeHtml(board.note)}</p>` : ''}
           </div>
         <div class="hero-badges">
             <span class="hero-badge">${board.courses.length} courses</span>
@@ -1345,7 +1614,7 @@ class SoostaApp {
             <span class="hero-badge secondary">${minutesToTime(range.startMinutes)}–${minutesToTime(range.endMinutes)}</span>
           </div>
         </div>
-        ${board.courses.length > 0 ? this.renderTimetable(board, positioned, currentTimeSlot, height, hours, range.startMinutes, pixelsPerMinute) : this.renderEmptyBoard()}
+        ${board.courses.length > 0 ? this.renderTimetable(positioned, height, hours, range.startMinutes, pixelsPerMinute) : this.renderEmptyBoard()}
       </section>
     `;
   }
@@ -1392,7 +1661,6 @@ class SoostaApp {
       <section class="${panelClassNames.join(' ')}" data-visual-state="${visualState}" ${isClosing ? 'aria-hidden="true"' : ''}>
         <div class="panel-heading">
           <div>
-            <p class="eyebrow">Editor</p>
             <h2>${isEditing ? escapeHtml(course.title || '강의 수정') : '새 강의 만들기'}</h2>
             <p class="hero-copy">${isEditing ? '선택된 강의를 다듬고 즉시 반영하세요.' : '한 과목씩 더 묵직하게 쌓아 올리는 방식으로 설계했어요.'}</p>
           </div>
@@ -1403,6 +1671,7 @@ class SoostaApp {
         </div>
         <form id="course-form" class="stack-form" data-mode="${isEditing ? 'edit' : 'create'}">
           <input type="hidden" name="course-id" value="${escapeHtml(course.id)}" />
+          <input type="hidden" name="location" value="${escapeHtml(course.location)}" />
           <label>
             <span>강의명</span>
             <input name="title" value="${escapeHtml(course.title)}" maxlength="60" placeholder="예: 인터랙션디자인" required />
@@ -1421,10 +1690,6 @@ class SoostaApp {
             <label>
               <span>교수명</span>
               <input name="instructor" value="${escapeHtml(course.instructor)}" maxlength="32" placeholder="예: 정민서" />
-            </label>
-            <label>
-              <span>대표 장소</span>
-              <input name="location" value="${escapeHtml(course.location)}" maxlength="32" placeholder="예: 공학관 301" />
             </label>
           </div>
           <label>
@@ -1449,15 +1714,27 @@ class SoostaApp {
             ${course.sessions.map((session, index) => this.renderSessionRow(session, index)).join('')}
           </div>
           <div class="form-note-row stack-actions">
-            <button type="button" class="ghost-button" data-action="new-course">${renderIcon('plus')}새 폼으로 전환</button>
+            <button type="button" class="ghost-button" data-action="new-course">${renderIcon('reset')}초기화</button>
             ${isEditing ? `<button type="button" class="ghost-button danger-button" data-action="delete-course" data-course-id="${escapeHtml(course.id)}">${renderIcon('trash')}이 강의 삭제</button>` : ''}
           </div>
         </form>
+        <button
+          type="button"
+          class="inspector-close-button"
+          data-action="close-inspector"
+          aria-label="${isEditing ? '강의 에디터 닫기' : '새 강의 폼 닫기'}"
+          title="${isEditing ? '에디터 닫기' : '폼 닫기'}"
+        >
+          ${renderIcon('collapse-right')}
+        </button>
       </section>
     `;
   }
 
   private renderSessionRow(session: CourseSession, index: number): string {
+    const resolvedStartValue = coerceTimeToOptions(session.start, SESSION_START_TIME_OPTIONS);
+    const resolvedEndValue = coerceTimeToOptions(session.end, getSessionEndTimeOptionsAfterStart(resolvedStartValue));
+
     return `
       <div class="session-row" data-session-id="${escapeHtml(session.id)}">
         <div class="session-row-header">
@@ -1474,26 +1751,541 @@ class SoostaApp {
             </select>
           </label>
           <label>
-            <span>시작</span>
-            <input name="session-start" type="time" step="${TIME_INPUT_STEP_SECONDS}" value="${session.start}" required />
-          </label>
-          <label>
-            <span>종료</span>
-            <input name="session-end" type="time" step="${TIME_INPUT_STEP_SECONDS}" value="${session.end}" required />
-          </label>
-          <label>
             <span>장소</span>
             <input name="session-location" value="${escapeHtml(session.location)}" maxlength="32" placeholder="세션별 장소" />
           </label>
+          <div class="form-field">
+            <span>시작</span>
+            ${this.renderSessionTimeInput(session.id, 'session-start', resolvedStartValue, resolvedEndValue)}
+          </div>
+          <div class="form-field">
+            <span>종료</span>
+            ${this.renderSessionTimeInput(session.id, 'session-end', resolvedEndValue, resolvedStartValue)}
+          </div>
         </div>
       </div>
     `;
   }
 
+  private renderSessionTimeInput(sessionId: string, name: SessionTimeFieldName, value: string, pairedValue?: string): string {
+    const timeOptions = getSessionTimeOptions(name, pairedValue);
+    const resolvedValue = timeOptions.includes(value) ? value : coerceTimeToOptions(value, timeOptions);
+    const label = name === 'session-start' ? '시작 시간' : '종료 시간';
+    const triggerValue = formatSessionTimeTriggerLabel(resolvedValue);
+
+    return `
+      <div
+        class="session-time-field"
+        data-session-id="${escapeHtml(sessionId)}"
+        data-session-time-field="${name}"
+        data-session-time-label="${label}"
+        data-open="false"
+      >
+        <input
+          type="hidden"
+          name="${name}"
+          class="session-time-hidden-input"
+          value="${escapeHtml(resolvedValue)}"
+          required
+        />
+        <button
+          type="button"
+          class="session-time-trigger"
+          data-session-time-trigger
+          data-session-id="${escapeHtml(sessionId)}"
+          data-session-time-field="${name}"
+          data-open="false"
+          aria-haspopup="dialog"
+          aria-expanded="false"
+          aria-label="${escapeHtml(`${label} ${triggerValue}`)}"
+        >
+          <span class="session-time-trigger-label">
+            <span class="session-time-trigger-value">${escapeHtml(triggerValue)}</span>
+            <span class="session-time-trigger-meta">${escapeHtml(label)} 선택</span>
+          </span>
+          <span class="session-time-trigger-icon" aria-hidden="true">${renderIcon('clock')}</span>
+        </button>
+        <div class="session-time-popover-slot"></div>
+      </div>
+    `;
+  }
+
+  private renderSessionTimeOptionButtons(
+    segment: SessionTimeWidgetSegment,
+    values: string[],
+    selectedValue: string,
+    formatter: (value: string) => string,
+  ): string {
+    return values
+      .map(
+        (value) => `
+          <button
+            type="button"
+            class="session-time-option"
+            data-role="option"
+            data-session-time-option="${segment}"
+            data-session-time-value="${escapeHtml(value)}"
+            data-selected="${value === selectedValue ? 'true' : 'false'}"
+            aria-pressed="${value === selectedValue ? 'true' : 'false'}"
+          >
+            ${escapeHtml(formatter(value))}
+          </button>
+        `,
+      )
+      .join('');
+  }
+
+  private renderSessionTimeSelectTrigger(
+    segment: SessionTimeMenuSegment,
+    selectedLabel: string,
+    isOpen: boolean,
+  ): string {
+    return `
+      <div class="session-time-select" data-session-time-select="${segment}" data-open="${isOpen ? 'true' : 'false'}">
+        <span class="session-time-group-label">${SESSION_TIME_SEGMENT_LABELS[segment]}</span>
+        <button
+          type="button"
+          class="session-time-select-trigger"
+          data-session-time-select-trigger="${segment}"
+          data-open="${isOpen ? 'true' : 'false'}"
+          aria-haspopup="listbox"
+          aria-expanded="${isOpen ? 'true' : 'false'}"
+          aria-label="${escapeHtml(`${SESSION_TIME_SEGMENT_LABELS[segment]} ${selectedLabel}`)}"
+        >
+          <span class="session-time-select-value">${escapeHtml(selectedLabel)}</span>
+          <span class="session-time-select-caret" aria-hidden="true">▾</span>
+        </button>
+      </div>
+    `;
+  }
+
+  private renderSessionTimeMeridiemButtons(selectedValue: GenericMeridiem, values: GenericMeridiem[]): string {
+    return `
+      <div class="session-time-meridiem">
+        <span class="session-time-group-label">${SESSION_TIME_SEGMENT_LABELS.meridiem}</span>
+        <div class="session-time-meridiem-options" role="group" aria-label="${escapeHtml(SESSION_TIME_SEGMENT_LABELS.meridiem)}">
+          ${this.renderSessionTimeOptionButtons('meridiem', values, selectedValue, (value) => SESSION_TIME_MERIDIEM_LABELS[value as GenericMeridiem])}
+        </div>
+      </div>
+    `;
+  }
+
+  private renderSessionTimePopoverMarkup(
+    fieldName: SessionTimeFieldName,
+    draftValue: string,
+    openSegment: SessionTimeMenuSegment | null,
+    pairedValue?: string,
+  ): string {
+    const timeOptions = getSessionTimeOptions(fieldName, pairedValue);
+    const { meridiem, hour, minute } = splitMeridiemTimeParts(draftValue);
+    const meridiemOptions = SESSION_TIME_MERIDIEMS.filter((value) => getSessionTimeHourOptions(timeOptions, value).length > 0);
+    const hourOptions = getSessionTimeHourOptions(timeOptions, meridiem);
+    const minuteOptions = getSessionTimeMinuteOptions(timeOptions, meridiem, hour);
+    const activeSegment = resolveSessionTimeMenuSegment(openSegment);
+    const label = fieldName === 'session-start' ? '시작 시간' : '종료 시간';
+    const optionSet =
+      activeSegment === 'hour'
+        ? {
+            values: hourOptions,
+            selectedValue: hour,
+            formatter: (value: string) => `${Number(value)}시`,
+          }
+        : {
+            values: minuteOptions,
+            selectedValue: minute,
+            formatter: (value: string) => `${value}분`,
+          };
+
+    return `
+      <div
+        class="session-time-popover is-open"
+        data-open="true"
+        role="dialog"
+        aria-label="${escapeHtml(label)} 선택"
+      >
+        ${this.renderSessionTimeMeridiemButtons(meridiem, meridiemOptions)}
+        <div class="session-time-select-row">
+          ${this.renderSessionTimeSelectTrigger('hour', `${Number(hour)}시`, activeSegment === 'hour')}
+          ${this.renderSessionTimeSelectTrigger('minute', `${minute}분`, activeSegment === 'minute')}
+        </div>
+        <div class="session-time-select-menu" data-session-time-menu="${activeSegment}">
+          <div class="session-time-select-menu-head">
+            <span class="session-time-select-menu-title">${SESSION_TIME_SEGMENT_LABELS[activeSegment]}</span>
+            <span class="session-time-select-menu-hint">${
+              activeSegment === 'minute' ? '바깥 클릭 또는 Enter로 적용' : '선택 후 다음 단계로 이동'
+            }</span>
+          </div>
+          <div class="session-time-select-options" data-segment="${activeSegment}" role="listbox" aria-label="${escapeHtml(SESSION_TIME_SEGMENT_LABELS[activeSegment])}">
+            ${this.renderSessionTimeOptionButtons(activeSegment, optionSet.values, optionSet.selectedValue, optionSet.formatter)}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  private getSessionTimeFieldElement(sessionId: string, fieldName: SessionTimeFieldName): HTMLElement | null {
+    return this.root.querySelector<HTMLElement>(
+      `.session-time-field[data-session-id="${sessionId}"][data-session-time-field="${fieldName}"]`,
+    );
+  }
+
+  private getSessionTimeFieldValue(sessionId: string, fieldName: SessionTimeFieldName): string | null {
+    return (
+      this.getSessionTimeFieldElement(sessionId, fieldName)?.querySelector<HTMLInputElement>('.session-time-hidden-input')?.value ??
+      null
+    );
+  }
+
+  private getSessionTimeOptionsForField(sessionId: string, fieldName: SessionTimeFieldName): string[] {
+    return getSessionTimeOptions(
+      fieldName,
+      this.getSessionTimeFieldValue(sessionId, getPairedSessionTimeFieldName(fieldName)) ?? undefined,
+    );
+  }
+
+  private getSessionTimeTargetFromElement(element: HTMLElement | null): PendingSessionTimeTarget | null {
+    const field = element?.closest<HTMLElement>('.session-time-field');
+    const sessionId = field?.dataset.sessionId;
+    const fieldName = field?.dataset.sessionTimeField;
+    if (!sessionId || !isSessionTimeFieldName(fieldName)) {
+      return null;
+    }
+
+    return {
+      sessionId,
+      fieldName,
+    };
+  }
+
+  private setSessionTimeFieldOpenState(field: HTMLElement, isOpen: boolean): void {
+    field.dataset.open = isOpen ? 'true' : 'false';
+    const row = field.closest<HTMLElement>('.session-row');
+    if (row) {
+      row.dataset.sessionTimeOpen = isOpen ? 'true' : 'false';
+    }
+    const trigger = field.querySelector<HTMLButtonElement>('[data-session-time-trigger]');
+    if (trigger) {
+      trigger.dataset.open = isOpen ? 'true' : 'false';
+      trigger.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+    }
+  }
+
+  private updateSessionTimeTriggerLabel(field: HTMLElement | null, value: string): void {
+    if (!field) {
+      return;
+    }
+
+    const trigger = field.querySelector<HTMLButtonElement>('[data-session-time-trigger]');
+    const triggerValue = field.querySelector<HTMLElement>('.session-time-trigger-value');
+    const label = field.dataset.sessionTimeLabel ?? '시간';
+    const formattedValue = formatSessionTimeTriggerLabel(value);
+
+    if (triggerValue) {
+      triggerValue.textContent = formattedValue;
+    }
+
+    if (trigger) {
+      trigger.setAttribute('aria-label', `${label} ${formattedValue}`);
+    }
+  }
+
+  private restorePendingSessionTimeTriggerFocus(): void {
+    if (!this.pendingSessionTimeFocus) {
+      return;
+    }
+
+    const pending = this.pendingSessionTimeFocus;
+    const trigger = this.getSessionTimeFieldElement(pending.sessionId, pending.fieldName)?.querySelector<HTMLButtonElement>(
+      '[data-session-time-trigger]',
+    );
+    if (!trigger) {
+      return;
+    }
+
+    this.pendingSessionTimeFocus = null;
+    trigger.focus({ preventScroll: true });
+  }
+
+  private queueSessionTimeTriggerFocus(target: PendingSessionTimeTarget): void {
+    this.pendingSessionTimeFocus = target;
+    window.requestAnimationFrame(() => {
+      this.restorePendingSessionTimeTriggerFocus();
+    });
+  }
+
+  private resumePendingSessionTimeWidgetOpen(): void {
+    if (!this.pendingSessionTimeOpen) {
+      return;
+    }
+
+    const pending = this.pendingSessionTimeOpen;
+    this.pendingSessionTimeOpen = null;
+    this.openSessionTimeWidget(pending.sessionId, pending.fieldName);
+  }
+
+  private openSessionTimeWidget(sessionId: string, fieldName: SessionTimeFieldName): void {
+    const field = this.getSessionTimeFieldElement(sessionId, fieldName);
+    const hiddenInput = field?.querySelector<HTMLInputElement>('.session-time-hidden-input');
+    const popoverSlot = field?.querySelector<HTMLElement>('.session-time-popover-slot');
+    if (!field || !hiddenInput || !popoverSlot) {
+      return;
+    }
+
+    this.sessionTimeWidget = {
+      sessionId,
+      fieldName,
+      committedValue: hiddenInput.value,
+      draftValue: hiddenInput.value,
+      openSegment: 'hour',
+    };
+
+    this.setSessionTimeFieldOpenState(field, true);
+    popoverSlot.innerHTML = this.renderSessionTimePopoverMarkup(
+      fieldName,
+      hiddenInput.value,
+      'hour',
+      this.getSessionTimeFieldValue(sessionId, getPairedSessionTimeFieldName(fieldName)) ?? undefined,
+    );
+  }
+
+  private renderOpenSessionTimeWidget(): void {
+    if (!this.sessionTimeWidget) {
+      return;
+    }
+
+    const field = this.getSessionTimeFieldElement(this.sessionTimeWidget.sessionId, this.sessionTimeWidget.fieldName);
+    const popoverSlot = field?.querySelector<HTMLElement>('.session-time-popover-slot');
+    if (!field || !popoverSlot) {
+      this.sessionTimeWidget = null;
+      return;
+    }
+
+    this.setSessionTimeFieldOpenState(field, true);
+    popoverSlot.innerHTML = this.renderSessionTimePopoverMarkup(
+      this.sessionTimeWidget.fieldName,
+      this.sessionTimeWidget.draftValue,
+      this.sessionTimeWidget.openSegment,
+      this.getSessionTimeFieldValue(
+        this.sessionTimeWidget.sessionId,
+        getPairedSessionTimeFieldName(this.sessionTimeWidget.fieldName),
+      ) ?? undefined,
+    );
+  }
+
+  private updateSessionTimeWidgetDraft(segment: SessionTimeWidgetSegment, value: string): void {
+    if (!this.sessionTimeWidget) {
+      return;
+    }
+
+    const timeOptions = this.getSessionTimeOptionsForField(this.sessionTimeWidget.sessionId, this.sessionTimeWidget.fieldName);
+    const nextParts = splitMeridiemTimeParts(this.sessionTimeWidget.draftValue);
+
+    if (segment === 'meridiem') {
+      nextParts.meridiem = value as GenericMeridiem;
+    } else if (segment === 'hour') {
+      nextParts.hour = String(Number(value) || 0).padStart(2, '0');
+    } else {
+      nextParts.minute = String(Number(value) || 0).padStart(2, '0');
+    }
+
+    const coerced = coerceMeridiemTimeParts(nextParts.meridiem, nextParts.hour, nextParts.minute, timeOptions);
+    const normalizedHour = String(Number(coerced.hour) || 0).padStart(2, '0');
+    const normalizedMinute = String(Number(coerced.minute) || 0).padStart(2, '0');
+    const canonicalHour =
+      coerced.meridiem === 'AM'
+        ? normalizedHour === '12'
+          ? '00'
+          : normalizedHour
+        : normalizedHour === '12'
+          ? '12'
+          : String(Number(normalizedHour) + 12).padStart(2, '0');
+
+    this.sessionTimeWidget.draftValue = `${canonicalHour}:${normalizedMinute}`;
+    this.sessionTimeWidget.openSegment = getNextSessionTimeMenuSegment(segment, this.sessionTimeWidget.openSegment);
+    this.renderOpenSessionTimeWidget();
+  }
+
+  private syncSessionEndTimeAfterStartChange(sessionId: string, startValue: string): void {
+    const endField = this.getSessionTimeFieldElement(sessionId, 'session-end');
+    const endHiddenInput = endField?.querySelector<HTMLInputElement>('.session-time-hidden-input');
+    if (!endField || !endHiddenInput) {
+      return;
+    }
+
+    const endOptions = getSessionTimeOptions('session-end', startValue);
+    if (endOptions.length === 0) {
+      return;
+    }
+
+    if (timeToMinutes(endHiddenInput.value) > timeToMinutes(startValue) && endOptions.includes(endHiddenInput.value)) {
+      return;
+    }
+
+    const nextEndValue = coerceTimeToOptions(endHiddenInput.value, endOptions);
+    if (nextEndValue === endHiddenInput.value) {
+      return;
+    }
+
+    endHiddenInput.value = nextEndValue;
+    this.updateSessionTimeTriggerLabel(endField, nextEndValue);
+  }
+
+  private toggleSessionTimeWidgetSegment(segment: SessionTimeMenuSegment): void {
+    if (!this.sessionTimeWidget) {
+      return;
+    }
+
+    this.sessionTimeWidget.openSegment = segment;
+    this.renderOpenSessionTimeWidget();
+  }
+
+  private shouldRestoreSessionTimeTriggerFocus(target: HTMLElement | null): boolean {
+    if (!target) {
+      return true;
+    }
+
+    return !target.closest('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+  }
+
+  private closeSessionTimeWidget(options: {
+    reason: SessionTimeWidgetCloseReason;
+    outsideTarget?: HTMLElement | null;
+  }): void {
+    if (!this.sessionTimeWidget) {
+      this.resumePendingSessionTimeWidgetOpen();
+      return;
+    }
+
+    const widget = this.sessionTimeWidget;
+    const field = this.getSessionTimeFieldElement(widget.sessionId, widget.fieldName);
+    const hiddenInput = field?.querySelector<HTMLInputElement>('.session-time-hidden-input');
+    const popoverSlot = field?.querySelector<HTMLElement>('.session-time-popover-slot');
+    const hasChanged = widget.draftValue !== widget.committedValue;
+    const shouldCommit =
+      options.reason === 'enter' ||
+      options.reason === 'minute' ||
+      ((options.reason === 'outside' || options.reason === 'toggle') && hasChanged);
+    const shouldWriteCommittedValue = shouldCommit && hasChanged;
+    const shouldRestoreFocus =
+      options.reason === 'escape' ||
+      options.reason === 'enter' ||
+      options.reason === 'minute' ||
+      options.reason === 'toggle' ||
+      (options.reason === 'outside' && this.shouldRestoreSessionTimeTriggerFocus(options.outsideTarget ?? null));
+
+    this.sessionTimeWidget = null;
+    if (popoverSlot) {
+      popoverSlot.innerHTML = '';
+    }
+    if (field) {
+      this.setSessionTimeFieldOpenState(field, false);
+    }
+
+    if (shouldWriteCommittedValue && hiddenInput) {
+      hiddenInput.value = widget.draftValue;
+      this.updateSessionTimeTriggerLabel(field, widget.draftValue);
+
+      if (widget.fieldName === 'session-start') {
+        this.syncSessionEndTimeAfterStartChange(widget.sessionId, widget.draftValue);
+      }
+    }
+
+    if (shouldRestoreFocus) {
+      this.queueSessionTimeTriggerFocus({
+        sessionId: widget.sessionId,
+        fieldName: widget.fieldName,
+      });
+    }
+
+    if (shouldWriteCommittedValue) {
+      const form = field?.closest<HTMLFormElement>('form');
+      if (form) {
+        void this.handleCourseInput(form);
+        return;
+      }
+    }
+
+    if (!['render', 'resize', 'unload'].includes(options.reason)) {
+      this.resumePendingSessionTimeWidgetOpen();
+    }
+  }
+
+  private handleSessionTimeOptionClick(button: HTMLButtonElement): void {
+    if (!this.sessionTimeWidget) {
+      return;
+    }
+
+    const segment = button.dataset.sessionTimeOption as SessionTimeWidgetSegment | undefined;
+    const value = button.dataset.sessionTimeValue;
+    if (!segment || !value) {
+      return;
+    }
+
+    this.updateSessionTimeWidgetDraft(segment, value);
+  }
+
+  private handleSessionTimeWidgetClick(target: HTMLElement): boolean {
+    const activeWidget = this.sessionTimeWidget;
+    const activeField = activeWidget ? this.getSessionTimeFieldElement(activeWidget.sessionId, activeWidget.fieldName) : null;
+    const trigger = target.closest<HTMLButtonElement>('[data-session-time-trigger]');
+    const selectTrigger = target.closest<HTMLButtonElement>('[data-session-time-select-trigger]');
+    const option = target.closest<HTMLButtonElement>('[data-session-time-option]');
+
+    if (activeWidget && activeField && !activeField.contains(target)) {
+      if (trigger) {
+        const pending = this.getSessionTimeTargetFromElement(trigger);
+        if (
+          pending &&
+          (pending.sessionId !== activeWidget.sessionId || pending.fieldName !== activeWidget.fieldName)
+        ) {
+          this.pendingSessionTimeOpen = pending;
+        }
+      }
+
+      this.closeSessionTimeWidget({ reason: 'outside', outsideTarget: target });
+      if (trigger) {
+        return true;
+      }
+    }
+
+    if (selectTrigger) {
+      const segment = selectTrigger.dataset.sessionTimeSelectTrigger as SessionTimeMenuSegment | undefined;
+      if (segment) {
+        this.toggleSessionTimeWidgetSegment(segment);
+        return true;
+      }
+    }
+
+    if (option) {
+      this.handleSessionTimeOptionClick(option);
+      return true;
+    }
+
+    if (!trigger) {
+      return false;
+    }
+
+    const sessionTimeTarget = this.getSessionTimeTargetFromElement(trigger);
+    if (!sessionTimeTarget) {
+      return false;
+    }
+
+    if (
+      activeWidget &&
+      activeWidget.sessionId === sessionTimeTarget.sessionId &&
+      activeWidget.fieldName === sessionTimeTarget.fieldName
+    ) {
+      this.closeSessionTimeWidget({ reason: 'toggle', outsideTarget: trigger });
+      return true;
+    }
+
+    this.pendingSessionTimeOpen = null;
+    this.openSessionTimeWidget(sessionTimeTarget.sessionId, sessionTimeTarget.fieldName);
+    return true;
+  }
+
   private renderTimetable(
-    board: TimetableBoard,
     positioned: ReturnType<typeof getPositionedSessions>,
-    currentTimeSlot: ReturnType<typeof getCurrentTimeSlotHighlight>,
     height: number,
     hours: number[],
     startMinutes: number,
@@ -1512,7 +2304,7 @@ class SoostaApp {
               <div class="timetable-corner">Time</div>
               ${DAY_ORDER.map(
                 (day) => `
-                  <div class="day-head">
+                  <div class="day-head" data-day-head="${day}">
                     <span>${escapeHtml(DAY_LABELS[day].short)}</span>
                     <small>${escapeHtml(DAY_LABELS[day].english)}</small>
                   </div>
@@ -1531,19 +2323,8 @@ class SoostaApp {
               <div class="day-columns">
                 ${DAY_ORDER.map((day) => {
                   const daySessions = positioned.filter((item) => item.day === day);
-                  const currentSlotMarkup =
-                    currentTimeSlot && currentTimeSlot.day === day
-                      ? `
-                        <div
-                          class="current-time-slot"
-                          aria-hidden="true"
-                          style="top:${(currentTimeSlot.startMinutes - startMinutes) * pixelsPerMinute + 4}px;height:${Math.max(18, (currentTimeSlot.endMinutes - currentTimeSlot.startMinutes) * pixelsPerMinute - 8)}px"
-                        ></div>
-                      `
-                      : '';
                   return `
-                    <div class="day-column" style="height:${height}px">
-                      ${currentSlotMarkup}
+                    <div class="day-column" data-day-column="${day}" style="height:${height}px">
                       ${hours
                         .map((hour) => {
                           const top = (hour - startMinutes) * pixelsPerMinute;
@@ -1554,12 +2335,15 @@ class SoostaApp {
                         .map((session) => {
                           const top = (session.startMinutes - startMinutes) * pixelsPerMinute;
                           const blockHeight = Math.max(44, (session.endMinutes - session.startMinutes) * pixelsPerMinute - 8);
+                          const blockLayout = getSessionBlockLayout(blockHeight, session.widthPercent, session.courseTitle.length);
                           const width = `calc(${session.widthPercent}% - 10px)`;
                           const left = `calc(${session.leftPercent}% + 6px)`;
                           return `
                             <button
                               type="button"
                               class="session-block ${session.isConflict ? 'is-conflict' : ''} ${session.courseId === this.selectedCourseId ? 'is-selected' : ''}"
+                              data-density="${blockLayout.density}"
+                              data-title-lines="${blockLayout.titleLines}"
                               data-action="select-course"
                               data-course-id="${escapeHtml(session.courseId)}"
                               data-course-color="${escapeHtml(sanitizeColor(session.courseColor))}"
@@ -1573,9 +2357,9 @@ class SoostaApp {
                               style="top:${top + 4}px;height:${blockHeight}px;left:${left};width:${width};--course-color:${sanitizeColor(session.courseColor)}"
                             >
                               <span class="session-block-title">${escapeHtml(session.courseTitle)}</span>
-                              <span class="session-block-meta">${escapeHtml(session.start)}–${escapeHtml(session.end)}</span>
-                              <span class="session-block-meta">${escapeHtml(session.location || session.courseLocation || '장소 미정')}</span>
-                              ${session.isConflict ? '<span class="session-conflict-chip">시간 겹침</span>' : ''}
+                              ${blockLayout.showTime ? `<span class="session-block-meta session-block-time">${escapeHtml(session.start)}–${escapeHtml(session.end)}</span>` : ''}
+                              ${blockLayout.showLocation ? `<span class="session-block-meta">${escapeHtml(session.location || session.courseLocation || '장소 미정')}</span>` : ''}
+                              ${session.isConflict && blockLayout.showConflictChip ? '<span class="session-conflict-chip">시간 겹침</span>' : ''}
                             </button>
                           `;
                         })
@@ -1584,13 +2368,12 @@ class SoostaApp {
                   `;
                 }).join('')}
               </div>
+              <div class="timetable-current-time-indicator" data-current-time-indicator hidden aria-hidden="true">
+                <span class="timetable-current-time-dot"></span>
+                <span class="timetable-current-time-line"></span>
+              </div>
             </div>
           </div>
-        </div>
-        <div class="legend-row">
-          <span>요일: 월–토</span>
-          <span>드래그는 30분 단위로 스냅 이동됩니다.</span>
-          <span>${board.courses.length}개 강의 기준</span>
         </div>
       </div>
     `;
@@ -1833,13 +2616,19 @@ class SoostaApp {
 
     switch (action) {
       case 'new-course':
+        if (!this.confirmDiscardInvalidInspectorDraft()) {
+          return;
+        }
         this.selectedCourseId = null;
         this.pendingCourseId = generateId('course');
         this.beginInspectorOpenAnimation();
-        this.showBanner({ tone: 'info', text: '새 강의 폼으로 전환했어요.' });
+        this.showBanner({ tone: 'info', text: '강의 입력 폼을 초기화했어요.' });
         this.render();
         return;
       case 'select-course':
+        if (!this.confirmDiscardInvalidInspectorDraft()) {
+          return;
+        }
         this.selectedCourseId = element.dataset.courseId ?? null;
         this.pendingCourseId = null;
         this.beginInspectorOpenAnimation();
@@ -2006,7 +2795,7 @@ class SoostaApp {
 
         this.lastReminderSweepAt = Date.now();
         if (nextEnabled) {
-          this.runReminderSweep(true);
+          this.runReminderSweep();
         }
         return;
       }
@@ -2094,6 +2883,9 @@ class SoostaApp {
         this.dismissLectureReminder();
         return;
       }
+      case 'close-inspector':
+        await this.handleCloseInspector();
+        return;
       default:
         return;
     }
@@ -2138,7 +2930,7 @@ class SoostaApp {
         successText: '보드 변경사항을 자동 저장했어요.',
         invalidText: '보드 이름과 학기를 입력하면 자동 저장돼요.',
       },
-      Boolean(name && semester),
+      Boolean(name.trim() && semester.trim()),
       true,
     );
   }
@@ -2218,6 +3010,10 @@ class SoostaApp {
   }
 
   private shouldDeferFormMutation(event: Event, target: HTMLElement): boolean {
+    if (target instanceof HTMLInputElement && target.type === 'color' && event.type === 'input') {
+      return true;
+    }
+
     if (!isCompositionTextField(target)) {
       return false;
     }
@@ -2369,12 +3165,12 @@ class SoostaApp {
 
   private readTextField(form: ParentNode, name: string): string {
     const element = form.querySelector<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(`[name="${name}"]`);
-    return element?.value.trim() ?? '';
+    return element?.value ?? '';
   }
 
   private readRowField(row: ParentNode, name: string): string {
     const element = row.querySelector<HTMLInputElement | HTMLSelectElement>(`[name="${name}"]`);
-    return element?.value.trim() ?? '';
+    return element?.value ?? '';
   }
 
   private syncShellLayoutState(inspectorState?: InspectorVisibility) {
@@ -2399,16 +3195,68 @@ class SoostaApp {
   }
 
   private renderFrame(preserveFocus = false): void {
+    if (this.sessionTimeWidget) {
+      this.closeSessionTimeWidget({ reason: 'render' });
+    }
     const snapshot = preserveFocus ? this.captureFocusSnapshot() : null;
     const scrollSnapshots = this.captureScrollSnapshots();
-    this.render();
+    let renderPassCount = 0;
+
+    do {
+      this.render();
+      renderPassCount += 1;
+    } while (renderPassCount < 2 && this.syncTimetablePixelsPerMinuteFit());
+
     this.restoreScrollSnapshots(scrollSnapshots);
     if (snapshot) {
       this.restoreFocusSnapshot(snapshot);
     }
+    this.restorePendingSessionTimeTriggerFocus();
+    this.resumePendingSessionTimeWidgetOpen();
     if (this.dragState) {
       this.renderDragPreview();
     }
+  }
+
+  private queueInspectorCloseButtonPositionSync(): void {
+    if (this.inspectorCloseButtonFrame !== null) {
+      return;
+    }
+
+    this.inspectorCloseButtonFrame = window.requestAnimationFrame(() => {
+      this.inspectorCloseButtonFrame = null;
+      this.syncInspectorCloseButtonPosition();
+    });
+  }
+
+  private syncInspectorCloseButtonPosition(): void {
+    const panel = this.root.querySelector<HTMLElement>('.inspector-panel');
+    const closeButton = panel?.querySelector<HTMLButtonElement>('.inspector-close-button');
+    if (!panel || !closeButton) {
+      return;
+    }
+
+    const shell = panel.closest<HTMLElement>('.app-shell');
+    if (shell?.dataset.layoutMode === 'inspector-below') {
+      panel.style.removeProperty('--inspector-close-button-top');
+      return;
+    }
+
+    const rect = panel.getBoundingClientRect();
+    if (rect.height <= 0) {
+      return;
+    }
+
+    const buttonHeight = closeButton.getBoundingClientRect().height || 40;
+    const viewportHeight = this.viewportHeight || this.getViewportHeight();
+    const visibleTop = Math.max(rect.top, 0);
+    const visibleBottom = Math.min(rect.bottom, viewportHeight);
+    const visibleMidpoint = visibleBottom > visibleTop ? (visibleTop + visibleBottom) / 2 : viewportHeight / 2;
+    const minTop = 16;
+    const maxTop = Math.max(minTop, rect.height - buttonHeight - 16);
+    const nextTop = Math.min(Math.max(visibleMidpoint - rect.top - buttonHeight / 2, minTop), maxTop);
+
+    panel.style.setProperty('--inspector-close-button-top', `${Math.round(nextTop)}px`);
   }
 
   private captureFocusSnapshot(): FocusSnapshot | null {
@@ -2433,6 +3281,7 @@ class SoostaApp {
       selectionStart: 'selectionStart' in activeElement ? activeElement.selectionStart : null,
       selectionEnd: 'selectionEnd' in activeElement ? activeElement.selectionEnd : null,
       sessionId: row?.dataset.sessionId ?? null,
+      rawValue: isCompositionTextField(activeElement) ? activeElement.value : null,
     };
   }
 
@@ -2451,6 +3300,10 @@ class SoostaApp {
 
     if (!field) {
       return;
+    }
+
+    if (snapshot.rawValue !== null && isCompositionTextField(field)) {
+      field.value = snapshot.rawValue;
     }
 
     field.focus({ preventScroll: true });
@@ -2861,7 +3714,7 @@ class SoostaApp {
     preview.style.width = 'calc(100% - 12px)';
     preview.innerHTML = `
       <span class="session-block-title">${escapeHtml(course?.title || '드래그 중')}</span>
-      <span class="session-block-meta">${escapeHtml(this.dragState.previewLabel)}</span>
+      <span class="session-block-meta session-block-time">${escapeHtml(this.dragState.previewLabel)}</span>
       <span class="session-block-meta">${escapeHtml(DAY_LABELS[this.dragState.previewDay].full)}</span>
     `;
     dayColumn.append(preview);
@@ -2957,7 +3810,60 @@ class SoostaApp {
   }
 
   private getTimetablePixelsPerMinute(): number {
-    return getTimetablePixelsPerMinute(this.viewportHeight || this.getViewportHeight());
+    return this.fittedTimetablePixelsPerMinute ?? getTimetablePixelsPerMinute(this.viewportHeight || this.getViewportHeight());
+  }
+
+  private syncTimetablePixelsPerMinuteFit(): boolean {
+    if (this.isLoading || !this.data) {
+      return false;
+    }
+
+    const board = this.getActiveBoard();
+    const basePixelsPerMinute = getTimetablePixelsPerMinute(this.viewportHeight || this.getViewportHeight());
+
+    if (board.courses.length === 0) {
+      const hadOverride = this.fittedTimetablePixelsPerMinute !== null;
+      this.fittedTimetablePixelsPerMinute = null;
+      return hadOverride;
+    }
+
+    const scroll = this.root.querySelector<HTMLElement>('.timetable-scroll');
+    const head = this.root.querySelector<HTMLElement>('.timetable-head');
+    const grid = this.root.querySelector<HTMLElement>('.timetable-grid');
+
+    if (!scroll || !head || !grid) {
+      return false;
+    }
+
+    const range = getGridRange(board);
+    const totalMinutes = range.endMinutes - range.startMinutes;
+    if (totalMinutes <= 0) {
+      return false;
+    }
+
+    const scrollStyles = window.getComputedStyle(scroll);
+    const gridStyles = window.getComputedStyle(grid);
+    const availableGridHeight =
+      scroll.clientHeight -
+      (Number.parseFloat(scrollStyles.paddingTop) || 0) -
+      (Number.parseFloat(scrollStyles.paddingBottom) || 0);
+    const gap = Number.parseFloat(gridStyles.rowGap || gridStyles.gap) || 0;
+    const desiredBodyHeight = availableGridHeight - head.getBoundingClientRect().height - gap;
+
+    if (!Number.isFinite(desiredBodyHeight) || desiredBodyHeight <= 0) {
+      return false;
+    }
+
+    const fittedPixelsPerMinute = Math.floor((desiredBodyHeight / totalMinutes) * 1000) / 1000;
+    const nextPixelsPerMinute = Math.max(MIN_FITTED_TIMETABLE_PIXELS_PER_MINUTE, fittedPixelsPerMinute);
+    const currentPixelsPerMinute = this.fittedTimetablePixelsPerMinute ?? basePixelsPerMinute;
+
+    if (Math.abs(currentPixelsPerMinute - nextPixelsPerMinute) < 0.01) {
+      return false;
+    }
+
+    this.fittedTimetablePixelsPerMinute = nextPixelsPerMinute;
+    return true;
   }
 
   private syncSessionDragToViewport(): void {
@@ -3130,6 +4036,48 @@ class SoostaApp {
     this.selectedCourseId = null;
     this.pendingCourseId = null;
     this.renderFrame(preserveFocus);
+  }
+
+  private discardLocalBoardDraft(): void {
+    if (!this.data || !this.lastPersistedData) {
+      return;
+    }
+
+    this.clearAutosaveTimer();
+    this.localRevision += 1;
+    this.lastSavedRevision = this.localRevision;
+    this.saveInFlightRevision = null;
+    this.data = restoreActiveBoardFromPersisted(this.data, this.lastPersistedData);
+    this.ensureSelection();
+    this.hasUnsavedChanges = false;
+    this.canAutosaveDraft = false;
+  }
+
+  private confirmDiscardInvalidInspectorDraft(): boolean {
+    if (!this.shouldShowInspector() || !this.hasUnsavedChanges || this.canAutosaveDraft) {
+      return true;
+    }
+
+    const approved = window.confirm('저장되지 않은 입력을 버리고 계속할까요?');
+    if (!approved) {
+      return false;
+    }
+
+    this.discardLocalBoardDraft();
+    this.dismissBanner();
+    return true;
+  }
+
+  private async handleCloseInspector(): Promise<void> {
+    if (!this.shouldShowInspector()) {
+      return;
+    }
+
+    if (!this.confirmDiscardInvalidInspectorDraft()) {
+      return;
+    }
+
+    this.clearCourseSelection(true);
   }
 
   private getViewportWidth(): number {
