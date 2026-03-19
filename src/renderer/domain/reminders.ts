@@ -17,7 +17,6 @@ const DAY_TO_JS_DAY = {
   WED: 3,
   THU: 4,
   FRI: 5,
-  SAT: 6,
 } as const;
 
 const MINUTE_IN_MS = 60 * 1000;

@@ -3,6 +3,110 @@ import { createBoard, createCourse, createSession, generateId } from '../../shar
 import type { AppData, Course, CourseSession, TimetableBoard } from '../../shared/types';
 import { timeToMinutes } from './time';
 
+export interface RgbColorChannels {
+  red: number;
+  green: number;
+  blue: number;
+}
+
+const colorPattern = /^#(?:[0-9a-fA-F]{3}){1,2}$/;
+
+const expandHexColor = (value: string): string =>
+  value.length === 4
+    ? `#${value[1]}${value[1]}${value[2]}${value[2]}${value[3]}${value[3]}`
+    : value;
+
+const clampRgbChannel = (value: number): number => Math.max(0, Math.min(255, Math.round(value)));
+
+export const sanitizeCourseColor = (value: string): string =>
+  colorPattern.test(value) ? expandHexColor(value).toLowerCase() : COLOR_PALETTE[0];
+
+export const hexColorToRgb = (value: string): RgbColorChannels => {
+  const normalized = sanitizeCourseColor(value).slice(1);
+  return {
+    red: Number.parseInt(normalized.slice(0, 2), 16),
+    green: Number.parseInt(normalized.slice(2, 4), 16),
+    blue: Number.parseInt(normalized.slice(4, 6), 16),
+  };
+};
+
+export const rgbToHexColor = ({ red, green, blue }: RgbColorChannels): string =>
+  `#${[red, green, blue]
+    .map((channel) => clampRgbChannel(channel).toString(16).padStart(2, '0'))
+    .join('')}`;
+
+export const getCourseColorRecommendations = (
+  courses: Course[],
+  options: {
+    currentCourseId?: string;
+    selectedColor?: string;
+    limit?: number;
+    preferFreshColors?: boolean;
+  } = {},
+): string[] => {
+  const limit = Math.max(1, options.limit ?? 6);
+  const selectedColor = options.selectedColor ? sanitizeCourseColor(options.selectedColor) : null;
+  const colorUsageCounts = new Map<string, number>();
+  const colorObservationOrder = new Map<string, number>();
+
+  courses.forEach((course, index) => {
+    if (course.id === options.currentCourseId) {
+      return;
+    }
+
+    const color = sanitizeCourseColor(course.color);
+    colorUsageCounts.set(color, (colorUsageCounts.get(color) ?? 0) + 1);
+    if (!colorObservationOrder.has(color)) {
+      colorObservationOrder.set(color, index);
+    }
+  });
+
+  const paletteOrder = COLOR_PALETTE.map((color) => sanitizeCourseColor(color));
+  const rankedPalette = [...paletteOrder].sort((left, right) => {
+    const usageDifference = (colorUsageCounts.get(left) ?? 0) - (colorUsageCounts.get(right) ?? 0);
+    if (usageDifference !== 0) {
+      return usageDifference;
+    }
+
+    return paletteOrder.indexOf(left) - paletteOrder.indexOf(right);
+  });
+
+  const rankedObservedColors = [...colorUsageCounts.entries()]
+    .sort((left, right) => {
+      const usageDifference = right[1] - left[1];
+      if (usageDifference !== 0) {
+        return usageDifference;
+      }
+
+      return (colorObservationOrder.get(left[0]) ?? 0) - (colorObservationOrder.get(right[0]) ?? 0);
+    })
+    .map(([color]) => color);
+
+  const recommendations: string[] = [];
+  const pushRecommendation = (color: string | null | undefined): void => {
+    if (!color) {
+      return;
+    }
+
+    const normalized = sanitizeCourseColor(color);
+    if (!recommendations.includes(normalized)) {
+      recommendations.push(normalized);
+    }
+  };
+
+  pushRecommendation(selectedColor);
+
+  if (options.preferFreshColors) {
+    rankedPalette.forEach(pushRecommendation);
+    rankedObservedColors.forEach(pushRecommendation);
+  } else {
+    rankedObservedColors.forEach(pushRecommendation);
+    rankedPalette.forEach(pushRecommendation);
+  }
+
+  return recommendations.slice(0, limit);
+};
+
 export const createBlankSession = (): CourseSession =>
   createSession({ day: 'MON', start: '09:00', end: '10:30', location: '' });
 

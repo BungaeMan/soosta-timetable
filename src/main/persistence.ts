@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { DATA_FILE_NAME } from '../shared/constants';
 import { coerceAppData, createSeedData } from '../shared/data';
-import type { AppData, ExportResult, ImportResult } from '../shared/types';
+import type { AppData, ExportResult, ImportResult, TimetableJpegExportRequest } from '../shared/types';
 
 const ensureDataDirectory = async (): Promise<string> => {
   const directory = app.getPath('userData');
@@ -21,6 +21,15 @@ const writeJsonFile = async (filePath: string, payload: AppData): Promise<void> 
   const tempPath = `${filePath}.tmp`;
   await writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
   await rename(tempPath, filePath);
+};
+
+const ensureFileExtension = (filePath: string, extensions: readonly string[]): string => {
+  const normalizedPath = filePath.toLowerCase();
+  if (extensions.some((extension) => normalizedPath.endsWith(`.${extension.toLowerCase()}`))) {
+    return filePath;
+  }
+
+  return `${filePath}.${extensions[0]}`;
 };
 
 export const loadAppData = async (): Promise<AppData> => {
@@ -71,6 +80,27 @@ export const exportAppData = async (
 
   await writeJsonFile(filePath, normalized);
   return { cancelled: false, filePath };
+};
+
+export const exportTimetableJpeg = async (
+  mainWindow: BrowserWindow,
+  payload: TimetableJpegExportRequest,
+): Promise<ExportResult> => {
+  const defaultFileName = payload.fileName?.trim() || `soosta-timetable-${new Date().toISOString().slice(0, 10)}.jpg`;
+  const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+    title: '시간표 JPG 저장',
+    defaultPath: join(app.getPath('downloads'), defaultFileName),
+    filters: [{ name: 'JPG Image', extensions: ['jpg', 'jpeg'] }],
+  });
+
+  if (canceled || !filePath) {
+    return { cancelled: true };
+  }
+
+  const resolvedFilePath = ensureFileExtension(filePath, ['jpg', 'jpeg']);
+  const imageBytes = payload.bytes instanceof Uint8Array ? payload.bytes : new Uint8Array(payload.bytes);
+  await writeFile(resolvedFilePath, imageBytes);
+  return { cancelled: false, filePath: resolvedFilePath };
 };
 
 export const importAppData = async (mainWindow: BrowserWindow): Promise<ImportResult> => {

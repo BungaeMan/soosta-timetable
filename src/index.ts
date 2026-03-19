@@ -4,8 +4,8 @@ import { app, BrowserWindow, ipcMain, Notification, screen, shell } from 'electr
 
 import { IPC_CHANNELS } from './shared/constants';
 import { createReminderPopupMarkup } from './shared/reminder-popup';
-import { exportAppData, importAppData, loadAppData, saveAppData } from './main/persistence';
-import type { AppData, NativeLectureReminderPayload } from './shared/types';
+import { exportAppData, exportTimetableJpeg, importAppData, loadAppData, saveAppData } from './main/persistence';
+import type { AppData, NativeLectureReminderPayload, TimetableJpegExportRequest } from './shared/types';
 
 declare const MAIN_WINDOW_WEBPACK_ENTRY: string;
 declare const MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY: string;
@@ -29,7 +29,7 @@ const REMINDER_POPUP_MAX_HEIGHT = 420;
 const REMINDER_POPUP_MARGIN = 18;
 const REMINDER_POPUP_AUTO_DISMISS_MS = 12_000;
 const REMINDER_HISTORY_RETENTION_MS = 8 * 24 * 60 * 60 * 1000;
-const APP_LOGO_FILE_NAME = 'soosta-logo.png';
+const APP_LOGO_FILE_NAME = 'logo.png';
 const DEV_APP_LOGO_PATH = path.resolve(process.cwd(), 'logo', APP_LOGO_FILE_NAME);
 
 const getAppLogoPath = (): string =>
@@ -262,6 +262,9 @@ const registerIpcHandlers = (): void => {
   ipcMain.handle(IPC_CHANNELS.saveData, async (_event, payload: AppData) => saveAppData(payload));
   ipcMain.handle(IPC_CHANNELS.exportData, async (_event, payload: AppData) => {
     return exportAppData(getMainWindow(), payload);
+  });
+  ipcMain.handle(IPC_CHANNELS.exportTimetableJpeg, async (_event, payload: TimetableJpegExportRequest) => {
+    return exportTimetableJpeg(getMainWindow(), payload);
   });
   ipcMain.handle(IPC_CHANNELS.importData, async () => {
     return importAppData(getMainWindow());

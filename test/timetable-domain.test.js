@@ -11,8 +11,12 @@ const {
 } = require('../dist-test/shared/reminders.js');
 const { createReminderPopupMarkup } = require('../dist-test/shared/reminder-popup.js');
 const {
+  getCourseColorRecommendations,
+  hexColorToRgb,
   normalizeCourseDraft,
+  rgbToHexColor,
   restoreActiveBoardFromPersisted,
+  sanitizeCourseColor,
   validateCourse,
 } = require('../dist-test/renderer/domain/model.js');
 const {
@@ -59,12 +63,23 @@ const {
   getPlatformControlRailSide,
   getRendererLayout,
   getTimetablePixelsPerMinute,
+  getViewportFittedTimetablePixelsPerMinute,
 } = require('../dist-test/renderer/domain/layout.js');
+const {
+  getTimetableJpegExportMetrics,
+  getTimetableJpegFileName,
+} = require('../dist-test/renderer/domain/export-image.js');
 
 const rendererAppSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'app.ts'), 'utf8');
+const exportImageSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'domain', 'export-image.ts'), 'utf8');
 const indexCssSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.css'), 'utf8');
 const mainProcessSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.ts'), 'utf8');
+const forgeConfigSource = fs.readFileSync(path.join(__dirname, '..', 'forge.config.ts'), 'utf8');
+const persistenceSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'persistence.ts'), 'utf8');
+const preloadSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'preload.ts'), 'utf8');
 const reminderPopupSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'shared', 'reminder-popup.ts'), 'utf8');
+const sharedConstantsSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'shared', 'constants.ts'), 'utf8');
+const sharedTypesSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'shared', 'types.ts'), 'utf8');
 const webpackRulesSource = fs.readFileSync(path.join(__dirname, '..', 'webpack.rules.ts'), 'utf8');
 
 const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -116,6 +131,59 @@ const makeBoard = () => ({
       sessions: [{ id: 's3', day: 'MON', start: '13:00', end: '14:15', location: '인문관 201' }],
     },
   ],
+});
+
+test('course color recommendations keep the current choice visible and surface analyzed lecture colors first', () => {
+  const board = makeBoard();
+
+  assert.deepEqual(
+    getCourseColorRecommendations(board.courses, {
+      currentCourseId: 'course-a',
+      selectedColor: '#7c72ff',
+      limit: 6,
+    }),
+    ['#7c72ff', '#4cc9f0', '#ff7aa2', '#ffb84c', '#7ddc8b', '#d69bff'],
+  );
+});
+
+test('course color recommendations fall back to the default palette when there are no other courses', () => {
+  assert.deepEqual(
+    getCourseColorRecommendations([], {
+      selectedColor: '#7c72ff',
+      limit: 6,
+    }),
+    ['#7c72ff', '#4cc9f0', '#ff7aa2', '#ffb84c', '#7ddc8b', '#d69bff'],
+  );
+});
+
+test('course color recommendations surface observed custom colors before falling back to the palette', () => {
+  assert.deepEqual(
+    getCourseColorRecommendations(
+      [
+        { ...makeBoard().courses[0], id: 'course-x', color: '#123456' },
+        { ...makeBoard().courses[1], id: 'course-y', color: '#abcdef' },
+      ],
+      {
+        selectedColor: '#ffb84c',
+        limit: 4,
+      },
+    ),
+    ['#ffb84c', '#123456', '#abcdef', '#7c72ff'],
+  );
+});
+
+test('course color helpers normalize hex colors and clamp RGB values', () => {
+  assert.equal(sanitizeCourseColor('#ABC'), '#aabbcc');
+  assert.deepEqual(hexColorToRgb('#4cc9f0'), { red: 76, green: 201, blue: 240 });
+  assert.equal(rgbToHexColor({ red: 300, green: -12, blue: 128.4 }), '#ff0080');
+});
+
+test('weekday constants remove Saturday across the app surface', () => {
+  assert.match(sharedTypesSource, /export type DayKey = 'MON' \| 'TUE' \| 'WED' \| 'THU' \| 'FRI';/);
+  assert.match(sharedConstantsSource, /export const DAY_ORDER: DayKey\[] = \['MON', 'TUE', 'WED', 'THU', 'FRI'\];/);
+  assert.match(sharedConstantsSource, /export const TIMETABLE_DAY_ORDER: DayKey\[] = DAY_ORDER;/);
+  assert.doesNotMatch(sharedConstantsSource, /SAT:/);
+  assert.match(sharedConstantsSource, /FRI: \{ short: '금', full: '금요일', english: 'Friday' \},/);
 });
 
 test('detectConflicts finds overlapping class sessions and counts stats', () => {
@@ -314,12 +382,12 @@ test('reminder popup markup removes the card-style border lines', () => {
 });
 
 test('reminder popup markup softens shadows and allows long content to expand or scroll instead of clipping', () => {
-  assert.match(reminderPopupSource, /--shadow: rgba\(79, 97, 150, 0\.12\);/);
+  assert.match(reminderPopupSource, /--shadow: rgba\(79, 97, 150, 0\.08\);/);
   assert.match(reminderPopupSource, /body\s*\{[\s\S]*overflow-y: auto;/);
   assert.match(reminderPopupSource, /body\s*\{[\s\S]*scrollbar-gutter: stable;/);
   assert.match(reminderPopupSource, /\.card\s*\{[\s\S]*min-height: 0;/);
-  assert.match(reminderPopupSource, /\.card\s*\{[\s\S]*box-shadow: 0 12px 24px var\(--shadow\);/);
-  assert.match(reminderPopupSource, /\.close-button\s*\{[\s\S]*box-shadow: 0 4px 10px rgba\(79, 97, 150, 0\.08\);/);
+  assert.match(reminderPopupSource, /\.card\s*\{[\s\S]*box-shadow: 0 10px 20px var\(--shadow\);/);
+  assert.match(reminderPopupSource, /\.close-button\s*\{[\s\S]*box-shadow: 0 3px 8px rgba\(79, 97, 150, 0\.06\);/);
   assert.match(reminderPopupSource, /\.body\s*\{[\s\S]*white-space: pre-wrap;/);
 });
 
@@ -701,10 +769,20 @@ test('session time widget keeps meridiem changes inside the hour-minute flow', (
   assert.equal(getNextSessionTimeMenuSegment('minute', 'minute'), 'minute');
 });
 
-test('session time popover renders a single AM/PM control group without a duplicate meridiem trigger', () => {
+test('session time popover relies on the option-button flow without duplicate hour-minute trigger controls', () => {
   assert.match(rendererAppSource, /renderSessionTimeMeridiemButtons\(meridiem, meridiemOptions\)/);
-  assert.match(rendererAppSource, /session-time-meridiem-options/);
-  assert.doesNotMatch(rendererAppSource, /renderSessionTimeSelectTrigger\('meridiem'/);
+  assert.match(rendererAppSource, /const selectionSummary = `\$\{SESSION_TIME_MERIDIEM_LABELS\[meridiem\]\} \$\{Number\(hour\)\}시 \$\{minute\}분`;/);
+  assert.match(rendererAppSource, /session-time-select-menu-summary/);
+  assert.doesNotMatch(rendererAppSource, /renderSessionTimeSelectTrigger/);
+  assert.doesNotMatch(rendererAppSource, /data-session-time-select-trigger/);
+  assert.doesNotMatch(rendererAppSource, /session-time-select-row/);
+  assert.doesNotMatch(indexCssSource, /\.session-time-select-trigger\s*\{/);
+  assert.match(indexCssSource, /\.session-time-select-menu-summary\s*\{/);
+});
+
+test('session time trigger stacks the selected time above the action label', () => {
+  assert.match(indexCssSource, /\.session-time-trigger-label\s*\{[\s\S]*display:\s*flex;[\s\S]*flex-direction:\s*column;[\s\S]*align-items:\s*flex-start;/);
+  assert.match(indexCssSource, /\.session-time-trigger-meta,\s*\.session-time-trigger-placeholder\s*\{[\s\S]*display:\s*block;/);
 });
 
 test('session rows keep button-based time widgets outside label wrappers', () => {
@@ -791,9 +869,14 @@ test('hero header renders board name and semester inline instead of a stacked se
   assert.match(indexCssSource, /\.hero-title-meta\s*\{[\s\S]*font-size: 14px;[\s\S]*font-weight: 600;[\s\S]*white-space: nowrap;/);
 });
 
-test('sidebar and editor headings no longer render English eyebrow subtitles and the next panel uses the updated Korean label', () => {
+test('sidebar drops the separate next schedule card and keeps reminder controls alongside today agenda markers', () => {
   assert.doesNotMatch(rendererAppSource, /<p class="eyebrow">/);
-  assert.match(rendererAppSource, /<h2>다음 일정<\/h2>/);
+  assert.doesNotMatch(rendererAppSource, /<h2>다음 일정<\/h2>/);
+  assert.match(rendererAppSource, /<h2>강의 알림<\/h2>/);
+  assert.match(rendererAppSource, /item\.isNext \? '<span class="agenda-state">다음 수업<\/span>' : ''/);
+  assert.doesNotMatch(rendererAppSource, /private renderNextSession\(/);
+  assert.doesNotMatch(rendererAppSource, /테스트 버튼은 설정과 관계없이 팝업·네이티브 알림·소리를 1회 바로 띄워줍니다\./);
+  assert.doesNotMatch(indexCssSource, /\.reminder-settings-footnote\s*\{/);
   assert.doesNotMatch(rendererAppSource, />다음 움직임</);
   assert.doesNotMatch(indexCssSource, /\.eyebrow\s*\{/);
 });
@@ -813,7 +896,7 @@ test('renderer bundles Pretendard locally so the primary UI font stays consisten
 test('lecture reminder card does not draw an extra border line', () => {
   const lectureReminderBlock = getCssBlock('.lecture-reminder');
   assert.match(lectureReminderBlock, /border: 0;/);
-  assert.match(lectureReminderBlock, /box-shadow: 0 12px 28px rgba\(79, 97, 150, 0\.1\);/);
+  assert.match(lectureReminderBlock, /box-shadow: 0 10px 24px rgba\(79, 97, 150, 0\.08\);/);
   assert.match(lectureReminderBlock, /align-items: flex-start;/);
   assert.doesNotMatch(lectureReminderBlock, /border:\s*1px solid/);
   assert.doesNotMatch(lectureReminderBlock, /inset 0 1px 0/);
@@ -822,9 +905,55 @@ test('lecture reminder card does not draw an extra border line', () => {
 test('top-right banner toast does not draw an extra border line', () => {
   const bannerBlock = getCssBlock('.banner');
   assert.match(bannerBlock, /border: 0;/);
-  assert.match(bannerBlock, /box-shadow: 0 8px 18px rgba\(79, 97, 150, 0\.032\);/);
+  assert.match(bannerBlock, /box-shadow: 0 6px 14px rgba\(79, 97, 150, 0\.028\);/);
   assert.doesNotMatch(bannerBlock, /border:\s*1px solid/);
   assert.doesNotMatch(bannerBlock, /inset 0 1px 0/);
+});
+
+test('global shadow tokens and secondary controls stay flatter after the shadow cleanup', () => {
+  assert.match(indexCssSource, /--shadow: 0 12px 28px rgba\(79, 97, 150, 0\.09\);/);
+  assert.match(indexCssSource, /--shadow-card: 0 8px 20px rgba\(79, 97, 150, 0\.07\);/);
+  assert.match(indexCssSource, /--shadow-control: 0 4px 12px rgba\(79, 97, 150, 0\.05\);/);
+  assert.match(indexCssSource, /--shadow-button: 0 8px 18px rgba\(98, 86, 255, 0\.16\);/);
+  assert.match(indexCssSource, /\.ghost-button\s*\{[\s\S]*box-shadow: none;/);
+  assert.match(indexCssSource, /\.soft-button\s*\{[\s\S]*box-shadow: none;/);
+  assert.match(getCssBlock('.sync-chip'), /box-shadow: none;/);
+  assert.match(getCssBlock('.color-field'), /box-shadow: none;/);
+  assert.match(getCssBlock('.topbar-brand-mark'), /box-shadow: inset 0 0 0 1px rgba\(59, 72, 108, 0\.08\);/);
+  assert.doesNotMatch(getCssBlock('.topbar-brand-mark'), /0 8px 18px rgba\(79, 97, 150, 0\.14\)/);
+});
+
+test('course color field styles support a collapsible recommendation and RGB control section', () => {
+  assert.match(getCssBlock('.color-field-shell'), /flex-direction: column;/);
+  assert.match(getCssBlock('.color-field-toggle'), /justify-content: space-between;/);
+  assert.match(getCssBlock('.color-field-toggle-summary'), /flex: 1;/);
+  assert.match(getCssBlock('.color-field-toggle-kicker'), /font-size: 11px;/);
+  assert.match(indexCssSource, /\.color-field-toggle\[aria-expanded='true'\] \.color-field-toggle-icon\s*\{[\s\S]*transform: rotate\(180deg\);/);
+  assert.match(getCssBlock('.color-field'), /flex-direction: column;/);
+  assert.match(indexCssSource, /\.color-field\[hidden\]\s*\{\s*display: none;/);
+  assert.match(getCssBlock('.color-swatch-grid'), /grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
+  assert.match(getCssBlock('.color-rgb-grid'), /grid-template-columns: repeat\(3, minmax\(0, 1fr\)\);/);
+  assert.match(getCssBlock('.color-swatch-button.is-active'), /background: rgba\(110, 103, 255, 0\.08\);/);
+  assert.match(getCssBlock('.color-preview-card'), /background: rgba\(255, 255, 255, 0\.78\);/);
+});
+
+test('app shell and packaged resources share logo/logo.png as the logo asset', () => {
+  assert.match(mainProcessSource, /const APP_LOGO_FILE_NAME = 'logo\.png';/);
+  assert.match(indexCssSource, /url\('\.\.\/logo\/logo\.png'\) center \/ cover no-repeat;/);
+  assert.match(forgeConfigSource, /const packagedAppLogo = path\.resolve\(__dirname, 'logo\/logo\.png'\);/);
+  assert.match(forgeConfigSource, /extraResource: \[packagedAppLogo\],/);
+  assert.doesNotMatch(mainProcessSource, /soosta-logo\.png/);
+  assert.doesNotMatch(indexCssSource, /soosta-logo\.png/);
+  assert.doesNotMatch(forgeConfigSource, /soosta-logo\.png/);
+});
+
+test('floating timetable surfaces use softer shadows instead of heavy lift', () => {
+  assert.match(getCssBlock('.session-context-menu'), /box-shadow: 0 12px 28px rgba\(79, 97, 150, 0\.12\);/);
+  assert.match(getCssBlock('.timetable-current-time-dot'), /0 6px 12px rgba\(219, 94, 122, 0\.16\)/);
+  assert.match(getCssBlock('.timetable-current-time-line'), /0 6px 14px rgba\(219, 94, 122, 0\.16\)/);
+  assert.match(getCssBlock('.session-block'), /box-shadow: 0 10px 22px color-mix\(in srgb, var\(--course-color\) 16%, transparent\);/);
+  assert.match(getCssBlock('.session-block.is-selected'), /box-shadow: 0 14px 28px color-mix\(in srgb, var\(--course-color\) 24%, transparent\);/);
+  assert.match(getCssBlock('.session-block.is-context-target'), /0 16px 30px color-mix\(in srgb, var\(--course-color\) 28%, transparent\)/);
 });
 
 test('reminder popup window grows to fit longer reminder content before it is shown', () => {
@@ -869,18 +998,75 @@ test('timetable footer legend is removed so the grid can use the freed vertical 
   assert.match(indexCssSource, /\.timetable-scroll\s*\{[\s\S]*padding-bottom: 0;/);
 });
 
-test('renderer keeps the timetable readable and lets the timetable panel scroll instead of shrinking the grid to fit', () => {
+test('renderer keeps the weekday timetable readable while preventing horizontal scroll on narrow widths', () => {
   assert.doesNotMatch(rendererAppSource, /syncTimetablePixelsPerMinuteFit/);
   assert.match(
     rendererAppSource,
-    /private getTimetablePixelsPerMinute\(\): number \{\s*return getTimetablePixelsPerMinute\(this\.viewportHeight \|\| this\.getViewportHeight\(\)\);\s*\}/,
+    /private getTimetablePixelsPerMinute\(\): number \{\s*return this\.timetableFitPixelsPerMinute \?\? getTimetablePixelsPerMinute\(this\.viewportHeight \|\| this\.getViewportHeight\(\)\);\s*\}/,
   );
   assert.match(getCssBlock(".app-shell[data-viewport-height-band='short']"), /--main-plan-max-height: min\(920px, calc\(100dvh - 184px\)\);/);
-  assert.match(indexCssSource, /\.timetable-grid\s*\{[\s\S]*width:\s*max\(100%, calc\(var\(--time-axis-width\) \+ \(var\(--timetable-day-min-width\) \* 6\) \+ \(var\(--timetable-gap\) \* 6\)\)\);/);
+  assert.match(indexCssSource, /\.timetable-scroll\s*\{[\s\S]*overflow-y: auto;[\s\S]*overflow-x: hidden;/);
+  assert.match(indexCssSource, /\.timetable-grid\s*\{[\s\S]*width:\s*100%;/);
+  assert.match(rendererAppSource, /private renderTimetable\([\s\S]*TIMETABLE_DAY_ORDER\.map\(/);
   assert.match(
     indexCssSource,
-    /\.timetable-head,\s*\.timetable-body\s*\{[\s\S]*grid-template-columns:\s*var\(--time-axis-width\) repeat\(6, minmax\(var\(--timetable-day-min-width\), 1fr\)\);/,
+    /\.timetable-head,\s*\.timetable-body\s*\{[\s\S]*grid-template-columns:\s*var\(--time-axis-width\) repeat\(5, minmax\(0, 1fr\)\);/,
   );
+});
+
+test('renderer exposes a timetable fit toggle that recalculates the visible timetable height and restores the default scale', () => {
+  assert.match(rendererAppSource, /data-action="toggle-timetable-fit"/);
+  assert.match(rendererAppSource, /aria-pressed="\$\{this\.isTimetableFitMode \? 'true' : 'false'\}"/);
+  assert.match(rendererAppSource, /private measureFittedTimetablePixelsPerMinute\(\): number \| null/);
+  assert.match(rendererAppSource, /private syncTimetableFitMode\(preserveFocus = false\): void/);
+  assert.match(rendererAppSource, /private toggleTimetableFitMode\(\): void/);
+  assert.match(rendererAppSource, /this\.queueTimetableFitSync\(preserveFocus\);/);
+  assert.match(rendererAppSource, /this\.timetableFitPixelsPerMinute \?\? getTimetablePixelsPerMinute\(this\.viewportHeight \|\| this\.getViewportHeight\(\)\)/);
+  assert.match(rendererAppSource, /case 'toggle-timetable-fit':[\s\S]*this\.toggleTimetableFitMode\(\);/);
+  assert.match(indexCssSource, /\.hero-actions\s*\{[\s\S]*justify-content: flex-end;/);
+  assert.match(indexCssSource, /\.timetable-fit-button\s*\{[\s\S]*white-space: nowrap;/);
+});
+
+test('renderer exposes a JPG export action for the timetable card', () => {
+  assert.match(rendererAppSource, /data-action="export-timetable-jpg"/);
+  assert.match(rendererAppSource, /\$\{renderIcon\('image'\)\}\s*\$\{this\.isTimetableJpegExporting \? 'JPG 저장 중…' : 'JPG 다운로드'\}/);
+  assert.match(rendererAppSource, /image: '<rect x="3" y="5" width="18" height="14" rx="2" \/><circle cx="9" cy="10" r="1\.5" \/><path d="m21 16-5\.5-5\.5L8 18" \/>'/);
+  assert.match(rendererAppSource, /JPG 다운로드/);
+  assert.match(rendererAppSource, /JPG 저장 중…/);
+  assert.match(rendererAppSource, /private async exportTimetableJpeg\(\): Promise<void>/);
+  assert.match(rendererAppSource, /await renderTimetableToJpegBytes\(\{/);
+  assert.match(rendererAppSource, /window\.soosta\.exportTimetableJpeg\(\{/);
+  assert.match(rendererAppSource, /fileName: getTimetableJpegFileName\(board\.name\)/);
+  assert.match(rendererAppSource, /case 'export-timetable-jpg':[\s\S]*await this\.exportTimetableJpeg\(\);/);
+  assert.match(indexCssSource, /\.hero-action-buttons\s*\{[\s\S]*display: inline-flex;/);
+  assert.match(indexCssSource, /\.timetable-export-button,\s*[\s\S]*\.timetable-fit-button\s*\{/);
+});
+
+test('main, preload, and shared types wire the JPG export IPC path', () => {
+  assert.match(sharedConstantsSource, /exportTimetableJpeg:\s*'soosta:export-timetable-jpeg'/);
+  assert.match(sharedTypesSource, /export interface TimetableJpegExportRequest \{\s*fileName: string;\s*bytes: Uint8Array;\s*\}/);
+  assert.match(sharedTypesSource, /exportTimetableJpeg: \(payload: TimetableJpegExportRequest\) => Promise<ExportResult>;/);
+  assert.match(preloadSource, /exportTimetableJpeg: \(payload: TimetableJpegExportRequest\) =>/);
+  assert.match(preloadSource, /ipcRenderer\.invoke\(IPC_CHANNELS\.exportTimetableJpeg, payload\)/);
+  assert.match(mainProcessSource, /ipcMain\.handle\(IPC_CHANNELS\.exportTimetableJpeg, async \(_event, payload: TimetableJpegExportRequest\) => \{/);
+  assert.match(mainProcessSource, /return exportTimetableJpeg\(getMainWindow\(\), payload\);/);
+  assert.match(persistenceSource, /export const exportTimetableJpeg = async \(/);
+  assert.match(persistenceSource, /filters: \[\{ name: 'JPG Image', extensions: \['jpg', 'jpeg'\] \}\]/);
+  assert.match(persistenceSource, /const resolvedFilePath = ensureFileExtension\(filePath, \['jpg', 'jpeg'\]\);/);
+});
+
+test('JPG export draws the semester inline with the board title and keeps session blocks fully opaque', () => {
+  assert.match(exportImageSource, /const titleWidth = context\.measureText\(board\.name\)\.width;/);
+  assert.match(exportImageSource, /context\.fillText\(board\.semester, contentX \+ titleWidth \+ 14, titleY \+ 10\);/);
+  assert.match(exportImageSource, /const fillColor = session\.isConflict \? theme\.danger : accent;/);
+  assert.doesNotMatch(exportImageSource, /withAlpha\(accent, 0\.16\)/);
+});
+
+test('JPG export clamps the left time labels so the last hour does not overflow the grid', () => {
+  assert.match(exportImageSource, /const labelY = Math\.min\(/);
+  assert.match(exportImageSource, /Math\.max\(bodyY \+ EXPORT_TIME_LABEL_OFFSET_Y, lineY - EXPORT_TIME_LABEL_OFFSET_Y\)/);
+  assert.match(exportImageSource, /bodyY \+ metrics\.gridHeight - EXPORT_TIME_LABEL_BOTTOM_PADDING/);
+  assert.doesNotMatch(exportImageSource, /context\.fillText\(minutesToTime\(minutes\), metrics\.outerPaddingX \+ metrics\.cardPadding \+ 18, lineY \+ 10\);/);
 });
 
 test('initial renderer load still renders through renderFrame so layout state stays consistent after the first edit', () => {
@@ -945,8 +1131,30 @@ test('compact editor layout keeps the inspector on the side longer and recenters
 test('color input defers live input mutations so the native RGB picker stays open while typing', () => {
   assert.match(
     rendererAppSource,
-    /target instanceof HTMLInputElement && target\.type === 'color' && event\.type === 'input'/,
+    /target instanceof HTMLInputElement && event\.type === 'input'[\s\S]*target\.type === 'color'/,
   );
+});
+
+test('course editor renders a foldable color section with recommended color actions and RGB adjustment controls', () => {
+  assert.match(rendererAppSource, /private isCourseColorFieldExpanded = false;/);
+  assert.match(rendererAppSource, /case 'toggle-color-field':/);
+  assert.match(rendererAppSource, /'chevron-down': '<path d="m6 9 6 6 6-6" \/>',/);
+  assert.match(rendererAppSource, /data-action="toggle-color-field"/);
+  assert.match(rendererAppSource, /\$\{renderIcon\('chevron-down'\)\}/);
+  assert.match(rendererAppSource, /aria-controls="course-color-panel"/);
+  assert.match(rendererAppSource, /추천 색상과 RGB 미세 조정 펼치기/);
+  assert.match(rendererAppSource, /id="course-color-panel"/);
+  assert.match(rendererAppSource, /data-action="recommend-color"/);
+  assert.match(rendererAppSource, /input name="color" type="color"/);
+  assert.match(rendererAppSource, /data-color-control="rgb"/);
+  assert.match(rendererAppSource, /private syncCourseColorFieldDisclosure\(form: HTMLFormElement\): void/);
+  assert.match(rendererAppSource, /form\?\.id === 'course-form'/);
+  assert.match(rendererAppSource, /panel\.removeAttribute\('hidden'\);/);
+  assert.match(rendererAppSource, /panel\.setAttribute\('hidden', ''\);/);
+  assert.match(rendererAppSource, /추천한 색을 시작점으로 잡고 수치를 직접 다듬을 수 있어요\./);
+  assert.match(rendererAppSource, /this\.isCourseColorFieldExpanded = !this\.isCourseColorFieldExpanded;/);
+  assert.match(rendererAppSource, /querySelectorAll<HTMLElement>\('\[data-color-preview-swatch\]'\)/);
+  assert.match(rendererAppSource, /this\.syncCourseColorControls\(form, target, event\.type === 'change'\);/);
 });
 
 test('renderer syncs the end time forward when a later start time is committed', () => {
@@ -1054,7 +1262,7 @@ test('resolveDraggedSessionPlacement snaps to half-hours, clamps, and preserves 
     gridEndMinutes: 1320,
   });
 
-  assert.equal(placement.day, 'SAT');
+  assert.equal(placement.day, 'FRI');
   assert.equal(placement.startMinutes, 570);
   assert.equal(placement.endMinutes - placement.startMinutes, 75);
 });
@@ -1591,6 +1799,37 @@ test('getTimetablePixelsPerMinute keeps the readable timetable scale even on sho
   assert.equal(getTimetablePixelsPerMinute(1080), 1.24);
   assert.equal(getTimetablePixelsPerMinute(900), 1.24);
   assert.equal(getTimetablePixelsPerMinute(Number.POSITIVE_INFINITY), 1.24);
+});
+
+test('getViewportFittedTimetablePixelsPerMinute derives a viewport-fitted scale and falls back on invalid input', () => {
+  assert.equal(getViewportFittedTimetablePixelsPerMinute(624, 780), 0.8);
+  assert.equal(getViewportFittedTimetablePixelsPerMinute(0, 780), 1.24);
+  assert.equal(getViewportFittedTimetablePixelsPerMinute(624, 0), 1.24);
+});
+
+test('timetable JPG export helpers return stable metrics and sanitized filenames', () => {
+  assert.deepEqual(getTimetableJpegExportMetrics(780), {
+    canvasWidth: 1404,
+    canvasHeight: 1940,
+    cardWidth: 1292,
+    cardHeight: 1836,
+    gridHeight: 1560,
+    pixelsPerMinute: 2,
+    dayColumnWidth: 214,
+    dayColumnGap: 12,
+    timeAxisWidth: 90,
+    dayHeaderHeight: 76,
+    outerPaddingX: 56,
+    outerPaddingY: 52,
+    cardPadding: 36,
+    metaHeight: 102,
+    timetableTopGap: 26,
+    sessionInsetX: 6,
+    sessionInsetY: 4,
+    renderScale: 2,
+  });
+  assert.equal(getTimetableJpegFileName('2026-1 시간표 / 디자인', new Date('2026-03-17T00:00:00Z')), 'soosta-timetable-2026-1-시간표-디자인-2026-03-17.jpg');
+  assert.equal(getTimetableJpegFileName('   ', new Date('2026-03-17T00:00:00Z')), 'soosta-timetable-timetable-2026-03-17.jpg');
 });
 
 test('platform control rails follow desktop conventions', () => {

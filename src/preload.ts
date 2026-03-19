@@ -7,6 +7,7 @@ import type {
   ImportResult,
   NativeLectureReminderPayload,
   SoostaApi,
+  TimetableJpegExportRequest,
   WindowMaximizedListener,
 } from './shared/types';
 
@@ -14,6 +15,8 @@ const api: SoostaApi = {
   loadData: () => ipcRenderer.invoke(IPC_CHANNELS.loadData) as Promise<AppData>,
   saveData: (data: AppData) => ipcRenderer.invoke(IPC_CHANNELS.saveData, data) as Promise<AppData>,
   exportData: (data: AppData) => ipcRenderer.invoke(IPC_CHANNELS.exportData, data) as Promise<ExportResult>,
+  exportTimetableJpeg: (payload: TimetableJpegExportRequest) =>
+    ipcRenderer.invoke(IPC_CHANNELS.exportTimetableJpeg, payload) as Promise<ExportResult>,
   importData: () => ipcRenderer.invoke(IPC_CHANNELS.importData) as Promise<ImportResult>,
   showLectureReminder: (payload: NativeLectureReminderPayload) =>
     ipcRenderer.invoke(IPC_CHANNELS.showLectureReminder, payload) as Promise<void>,

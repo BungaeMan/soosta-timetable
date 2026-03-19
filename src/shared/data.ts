@@ -5,7 +5,7 @@ import {
 } from './reminders';
 import type { AppData, AppPreferences, Course, CourseSession, DayKey, TimetableBoard } from './types';
 
-const DAY_SET = new Set<DayKey>(['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT']);
+const DAY_SET = new Set<DayKey>(['MON', 'TUE', 'WED', 'THU', 'FRI']);
 const TIME_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const MAX_SESSION_END_MINUTES = 23 * 60 + 30;

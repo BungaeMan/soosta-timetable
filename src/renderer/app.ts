@@ -1,4 +1,4 @@
-import { APP_NAME, DAY_LABELS, DAY_ORDER, LECTURE_REMINDER_LEAD_MINUTES } from '../shared/constants';
+import { APP_NAME, DAY_LABELS, DAY_ORDER, LECTURE_REMINDER_LEAD_MINUTES, TIMETABLE_DAY_ORDER } from '../shared/constants';
 import { generateId } from '../shared/data';
 import {
   formatLectureReminderLeadMinutes,
@@ -19,11 +19,13 @@ import type {
   Unsubscribe,
 } from '../shared/types';
 import type { DesktopPlatform } from './domain/layout';
+import { getTimetableJpegFileName, renderTimetableToJpegBytes } from './domain/export-image';
 import {
   getPlatformControlRail,
   getPlatformControlRailSide,
   getRendererLayout,
   getTimetablePixelsPerMinute,
+  getViewportFittedTimetablePixelsPerMinute,
 } from './domain/layout';
 import {
   getDueLectureReminderEvents,
@@ -34,18 +36,19 @@ import {
   createBlankBoard,
   createBlankCourse,
   createBlankSession,
+  getCourseColorRecommendations,
+  hexColorToRgb,
   duplicateBoard,
   normalizeCourseDraft,
+  rgbToHexColor,
   restoreActiveBoardFromPersisted,
+  sanitizeCourseColor,
   validateCourse,
 } from './domain/model';
 import {
   getCurrentTimeIndicatorState,
-  formatFreeWindow,
   getBoardStats,
-  getFreeWindows,
   getGridRange,
-  getNextSession,
   getPositionedSessions,
   getSessionDropRejectMessage,
   getTodayAgenda,
@@ -128,7 +131,8 @@ interface SessionBlockLayout {
   showConflictChip: boolean;
 }
 
-const colorPattern = /^#(?:[0-9a-fA-F]{3}){1,2}$/;
+type CourseColorChannel = 'red' | 'green' | 'blue';
+
 const AUTOSAVE_DELAY_MS = 360;
 const BANNER_EXIT_DURATION_MS = 560;
 const BANNER_AUTO_DISMISS_MS: Record<BannerTone, number> = {
@@ -144,6 +148,9 @@ const INSPECTOR_SPRING_DURATION_MS = 760;
 const SESSION_DRAG_START_DISTANCE_PX = 6;
 const CURRENT_TIME_TICK_MS = 60 * 1000;
 const CURRENT_TIME_TICK_BUFFER_MS = 48;
+const FITTED_TIMETABLE_BLOCK_MIN_HEIGHT = 28;
+const DEFAULT_TIMETABLE_BLOCK_MIN_HEIGHT = 44;
+const TIMETABLE_FIT_SYNC_EPSILON = 0.005;
 const REMINDER_SWEEP_INTERVAL_MS = 15 * 1000;
 const REMINDER_SWEEP_LOOKBACK_MS = 90 * 1000;
 const REMINDER_CARD_AUTO_DISMISS_MS = 12 * 1000;
@@ -205,7 +212,7 @@ const escapeHtml = (value: string): string =>
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 
-const sanitizeColor = (value: string): string => (colorPattern.test(value) ? value : '#7c72ff');
+const sanitizeColor = (value: string): string => sanitizeCourseColor(value);
 const prefersReducedMotion = (): boolean => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
 const isReminderLeadMinutes = (value: number): value is LectureReminderLeadMinutes =>
   LECTURE_REMINDER_LEAD_MINUTES.some((candidate) => candidate === value);
@@ -285,7 +292,7 @@ const getSessionTimeMinuteOptions = (times: string[], meridiem: GenericMeridiem,
 
 const getCurrentWeekday = (now = new Date()): DayKey | null => {
   const jsDay = now.getDay();
-  if (jsDay >= 1 && jsDay <= 6) {
+  if (jsDay >= 1 && jsDay <= DAY_ORDER.length) {
     return DAY_ORDER[jsDay - 1];
   }
 
@@ -343,6 +350,7 @@ const renderIcon = (name: string): string => {
     plus: '<path d="M12 5v14" /><path d="M5 12h14" />',
     import: '<path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M5 21h14" />',
     export: '<path d="M12 21V9" /><path d="m7 14 5-5 5 5" /><path d="M5 3h14" />',
+    image: '<rect x="3" y="5" width="18" height="14" rx="2" /><circle cx="9" cy="10" r="1.5" /><path d="m21 16-5.5-5.5L8 18" />',
     board: '<rect x="4" y="5" width="16" height="14" rx="3" /><path d="M8 9h8" /><path d="M8 13h5" />',
     clock: '<circle cx="12" cy="12" r="8" /><path d="M12 8v4l3 2" />',
     alert: '<path d="M12 4 4.5 18h15L12 4Z" /><path d="M12 10v3" /><path d="M12 16h.01" />',
@@ -352,6 +360,7 @@ const renderIcon = (name: string): string => {
     edit: '<path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />',
     reset: '<path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 4v5h5" />',
     'collapse-right': '<path d="m10 7 5 5-5 5" /><path d="M18 5v14" />',
+    'chevron-down': '<path d="m6 9 6 6 6-6" />',
     minimize: '<path d="M5 12h14" />',
     maximize: '<rect x="5" y="5" width="14" height="14" rx="2" />',
     restore:
@@ -409,6 +418,7 @@ class SoostaApp {
   private suppressSessionBlockClickTimer: ReturnType<typeof setTimeout> | null = null;
   private currentTimeTicker: number | null = null;
   private currentTimeIndicatorSyncFrame: number | null = null;
+  private timetableFitSyncFrame: number | null = null;
   private layoutResizeObserver: ResizeObserver | null = null;
   private reminderSweepTimer: ReturnType<typeof setInterval> | null = null;
   private reminderCardTimer: ReturnType<typeof setTimeout> | null = null;
@@ -423,6 +433,10 @@ class SoostaApp {
   private sessionTimeWidget: SessionTimeWidgetState | null = null;
   private pendingSessionTimeFocus: PendingSessionTimeTarget | null = null;
   private pendingSessionTimeOpen: PendingSessionTimeTarget | null = null;
+  private isCourseColorFieldExpanded = false;
+  private isTimetableFitMode = false;
+  private timetableFitPixelsPerMinute: number | null = null;
+  private isTimetableJpegExporting = false;
 
   public constructor(root: HTMLDivElement) {
     this.root = root;
@@ -526,6 +540,10 @@ class SoostaApp {
       const form = target.closest<HTMLFormElement>('form');
       if (!form) {
         return;
+      }
+
+      if (form.id === 'course-form') {
+        this.syncCourseColorControls(form, target, event.type === 'change');
       }
 
       if (this.shouldDeferFormMutation(event, target)) {
@@ -660,8 +678,7 @@ class SoostaApp {
           activeField &&
           target instanceof Node &&
           activeField.contains(target) &&
-          (!(target instanceof HTMLElement) ||
-            (!target.closest('[data-session-time-select-trigger]') && !target.closest('[data-session-time-option]')))
+          (!(target instanceof HTMLElement) || !target.closest('[data-session-time-option]'))
         ) {
           event.preventDefault();
           this.closeSessionTimeWidget({ reason: 'enter' });
@@ -704,6 +721,7 @@ class SoostaApp {
       this.layoutResizeObserver?.disconnect();
       this.layoutResizeObserver = null;
       this.cancelQueuedCurrentTimeIndicatorSync();
+      this.cancelQueuedTimetableFitSync();
       this.clearBannerTimers();
       this.stopCurrentTimeTicker();
       this.stopReminderSweepLoop();
@@ -1433,12 +1451,10 @@ class SoostaApp {
 
     const board = this.getActiveBoard();
     const agenda = getTodayAgenda(board);
-    const nextSession = getNextSession(board);
     const remindersEnabled = this.areLectureRemindersEnabled();
     const reminderLeadMinutes = this.getLectureReminderLeadMinutes();
     const reminderSummary = this.getLectureReminderSummary();
-    const agendaDay = agenda.length > 0 ? agenda[0].day : getCurrentWeekday() ?? nextSession?.day ?? null;
-    const freeWindows = getFreeWindows(board, agendaDay);
+    const agendaDay = agenda.length > 0 ? agenda[0].day : getCurrentWeekday() ?? null;
 
     return `
       <section class="panel-card board-panel">
@@ -1498,87 +1514,78 @@ class SoostaApp {
       <section class="panel-card insight-panel">
         <div class="panel-heading compact">
           <div>
-            <h2>다음 일정</h2>
+            <h2>강의 알림</h2>
           </div>
         </div>
-        ${nextSession ? this.renderNextSession(nextSession, remindersEnabled, reminderLeadMinutes) : '<div class="empty-copy">등록된 강의가 없어 다음 일정도 아직 비어 있어요.</div>'}
-        <div class="subsection-block">
-          <h3>강의 알림 설정</h3>
-          <p class="empty-copy compact-copy">
-            ${
-              remindersEnabled
-                ? reminderLeadMinutes.length > 0
-                  ? `자동 알림이 켜져 있어요. ${reminderSummary}`
-                  : '자동 알림은 켜져 있지만 선택된 시각이 없어요. 아래에서 분 단위로 직접 입력하거나 기본 버튼으로 추가해 주세요.'
-                : `자동 알림이 꺼져 있어요. 켜면 선택한 시각(${reminderLeadMinutes.length > 0 ? formatReminderLeadList(reminderLeadMinutes) : '없음'})에 다시 알려줍니다.`
-            }
-          </p>
-          <div class="reminder-settings-panel">
-            <div class="reminder-settings-group reminder-settings-actions-grid">
-              <button
-                type="button"
-                class="${remindersEnabled ? 'soft-button' : 'ghost-button'} reminder-settings-button"
-                data-action="toggle-lecture-reminders"
-              >
-                ${renderIcon(remindersEnabled ? 'check' : 'alert')}
-                ${remindersEnabled ? '알림 끄기' : '알림 켜기'}
+        <p class="empty-copy compact-copy">
+          ${
+            remindersEnabled
+              ? reminderLeadMinutes.length > 0
+                ? `자동 알림이 켜져 있어요. ${reminderSummary}`
+                : '자동 알림은 켜져 있지만 선택된 시각이 없어요. 아래에서 분 단위로 직접 입력하거나 기본 버튼으로 추가해 주세요.'
+              : `자동 알림이 꺼져 있어요. 켜면 선택한 시각(${reminderLeadMinutes.length > 0 ? formatReminderLeadList(reminderLeadMinutes) : '없음'})에 다시 알려줍니다.`
+          }
+        </p>
+        <div class="reminder-settings-panel">
+          <div class="reminder-settings-group reminder-settings-actions-grid">
+            <button
+              type="button"
+              class="${remindersEnabled ? 'soft-button' : 'ghost-button'} reminder-settings-button"
+              data-action="toggle-lecture-reminders"
+            >
+              ${renderIcon(remindersEnabled ? 'check' : 'alert')}
+              ${remindersEnabled ? '알림 끄기' : '알림 켜기'}
+            </button>
+            <button
+              type="button"
+              class="ghost-button reminder-settings-button"
+              data-action="test-lecture-reminder"
+            >
+              ${renderIcon('spark')}
+              테스트 알림
+            </button>
+          </div>
+          <div class="reminder-settings-group reminder-settings-presets-grid">
+            ${LECTURE_REMINDER_LEAD_MINUTES.map(
+              (minutes) => `
+                <button
+                  type="button"
+                  class="${reminderLeadMinutes.includes(minutes) ? 'soft-button' : 'ghost-button'} reminder-settings-button"
+                  data-action="toggle-lecture-reminder-lead"
+                  data-lead-minutes="${minutes}"
+                >
+                  ${renderIcon(reminderLeadMinutes.includes(minutes) ? 'check' : 'clock')}
+                  ${formatReminderLeadLabel(minutes)}
+                </button>
+              `,
+            ).join('')}
+          </div>
+          <form id="reminder-settings-form" class="stack-form reminder-settings-form reminder-settings-group">
+            <label>
+              <span>직접 입력 (분)</span>
+              <input
+                name="lecture-reminder-lead-minutes"
+                value="${escapeHtml(reminderLeadMinutes.join(', '))}"
+                inputmode="numeric"
+                placeholder="예: 90, 45, 10"
+              />
+            </label>
+            <p class="empty-copy compact-copy">쉼표나 공백으로 여러 시각을 입력할 수 있어요. 예: 120 45 10</p>
+            <div class="reminder-settings-actions-grid reminder-settings-form-actions">
+              <button type="submit" class="soft-button reminder-settings-button">
+                ${renderIcon('check')}
+                시각 저장
               </button>
               <button
                 type="button"
                 class="ghost-button reminder-settings-button"
-                data-action="test-lecture-reminder"
+                data-action="reset-lecture-reminder-times"
               >
-                ${renderIcon('spark')}
-                테스트 알림
+                ${renderIcon('clock')}
+                기본값 복원
               </button>
             </div>
-            <div class="reminder-settings-group reminder-settings-presets-grid">
-              ${LECTURE_REMINDER_LEAD_MINUTES.map(
-                (minutes) => `
-                  <button
-                    type="button"
-                    class="${reminderLeadMinutes.includes(minutes) ? 'soft-button' : 'ghost-button'} reminder-settings-button"
-                    data-action="toggle-lecture-reminder-lead"
-                    data-lead-minutes="${minutes}"
-                  >
-                    ${renderIcon(reminderLeadMinutes.includes(minutes) ? 'check' : 'clock')}
-                    ${formatReminderLeadLabel(minutes)}
-                  </button>
-                `,
-              ).join('')}
-            </div>
-            <form id="reminder-settings-form" class="stack-form reminder-settings-form reminder-settings-group">
-              <label>
-                <span>직접 입력 (분)</span>
-                <input
-                  name="lecture-reminder-lead-minutes"
-                  value="${escapeHtml(reminderLeadMinutes.join(', '))}"
-                  inputmode="numeric"
-                  placeholder="예: 90, 45, 10"
-                />
-              </label>
-              <p class="empty-copy compact-copy">쉼표나 공백으로 여러 시각을 입력할 수 있어요. 예: 120 45 10</p>
-              <div class="reminder-settings-actions-grid reminder-settings-form-actions">
-                <button type="submit" class="soft-button reminder-settings-button">
-                  ${renderIcon('check')}
-                  시각 저장
-                </button>
-                <button
-                  type="button"
-                  class="ghost-button reminder-settings-button"
-                  data-action="reset-lecture-reminder-times"
-                >
-                  ${renderIcon('clock')}
-                  기본값 복원
-                </button>
-              </div>
-            </form>
-          </div>
-          <p class="empty-copy compact-copy reminder-settings-footnote">테스트 버튼은 설정과 관계없이 팝업·네이티브 알림·소리를 1회 바로 띄워줍니다.</p>
-        </div>
-        <div class="subsection-block">
-          <h3>${agendaDay ? `${escapeHtml(DAY_LABELS[agendaDay].full)} 빈 시간` : '이번 주 빈 시간'}</h3>
-          ${freeWindows.length > 0 ? `<ul class="free-window-list">${freeWindows.map((window) => `<li>${escapeHtml(formatFreeWindow(window))}</li>`).join('')}</ul>` : '<div class="empty-copy compact-copy">30분 이상 비는 시간이 없어요.</div>'}
+          </form>
         </div>
       </section>
     `;
@@ -1591,6 +1598,7 @@ class SoostaApp {
     const positioned = getPositionedSessions(board);
     const pixelsPerMinute = this.getTimetablePixelsPerMinute();
     const height = (range.endMinutes - range.startMinutes) * pixelsPerMinute;
+    const hasCourses = board.courses.length > 0;
     const hours: number[] = [];
     for (let minutes = range.startMinutes; minutes <= range.endMinutes; minutes += 60) {
       hours.push(minutes);
@@ -1606,15 +1614,171 @@ class SoostaApp {
             </div>
             ${board.note ? `<p class="hero-copy">${escapeHtml(board.note)}</p>` : ''}
           </div>
-        <div class="hero-badges">
-            <span class="hero-badge">${board.courses.length} courses</span>
-            <span class="hero-badge secondary">${stats.totalCredits}학점</span>
-            <span class="hero-badge secondary">${minutesToTime(range.startMinutes)}–${minutesToTime(range.endMinutes)}</span>
+          <div class="hero-actions">
+            <div class="hero-badges">
+              <span class="hero-badge">${board.courses.length} courses</span>
+              <span class="hero-badge secondary">${stats.totalCredits}학점</span>
+              <span class="hero-badge secondary">${minutesToTime(range.startMinutes)}–${minutesToTime(range.endMinutes)}</span>
+            </div>
+            ${
+              hasCourses
+                ? `
+                  <div class="hero-action-buttons">
+                    <button
+                      type="button"
+                      class="ghost-button timetable-export-button"
+                      data-action="export-timetable-jpg"
+                      ${this.isTimetableJpegExporting ? 'disabled' : ''}
+                    >
+                      ${renderIcon('image')}
+                      ${this.isTimetableJpegExporting ? 'JPG 저장 중…' : 'JPG 다운로드'}
+                    </button>
+                    <button
+                      type="button"
+                      class="${this.isTimetableFitMode ? 'soft-button' : 'ghost-button'} timetable-fit-button"
+                      data-action="toggle-timetable-fit"
+                      aria-pressed="${this.isTimetableFitMode ? 'true' : 'false'}"
+                    >
+                      ${renderIcon(this.isTimetableFitMode ? 'restore' : 'maximize')}
+                      ${this.isTimetableFitMode ? '원래 높이' : '한 화면 맞춤'}
+                    </button>
+                  </div>
+                `
+                : ''
+            }
           </div>
         </div>
-        ${board.courses.length > 0 ? this.renderTimetable(positioned, height, hours, range.startMinutes, pixelsPerMinute) : this.renderEmptyBoard()}
+        ${hasCourses ? this.renderTimetable(positioned, height, hours, range.startMinutes, pixelsPerMinute) : this.renderEmptyBoard()}
       </section>
     `;
+  }
+
+  private getMinimumSessionBlockHeight(): number {
+    return this.isTimetableFitMode ? FITTED_TIMETABLE_BLOCK_MIN_HEIGHT : DEFAULT_TIMETABLE_BLOCK_MIN_HEIGHT;
+  }
+
+  private measureFittedTimetablePixelsPerMinute(): number | null {
+    if (!this.data) {
+      return null;
+    }
+
+    const board = this.getActiveBoard();
+    if (board.courses.length === 0) {
+      return null;
+    }
+
+    const scroll = this.root.querySelector<HTMLElement>('.timetable-scroll');
+    const grid = scroll?.querySelector<HTMLElement>('.timetable-grid');
+    const head = grid?.querySelector<HTMLElement>('.timetable-head');
+    if (!scroll || !grid || !head) {
+      return null;
+    }
+
+    const range = getGridRange(board);
+    const minuteSpan = range.endMinutes - range.startMinutes;
+    const styles = window.getComputedStyle(grid);
+    const gap = Number.parseFloat(styles.rowGap || styles.gap || '0') || 0;
+    const availableHeight = scroll.clientHeight - head.getBoundingClientRect().height - gap;
+
+    return getViewportFittedTimetablePixelsPerMinute(
+      availableHeight,
+      minuteSpan,
+      getTimetablePixelsPerMinute(this.viewportHeight || this.getViewportHeight()),
+    );
+  }
+
+  private cancelQueuedTimetableFitSync(): void {
+    if (this.timetableFitSyncFrame !== null) {
+      window.cancelAnimationFrame(this.timetableFitSyncFrame);
+      this.timetableFitSyncFrame = null;
+    }
+  }
+
+  private queueTimetableFitSync(preserveFocus = false): void {
+    if (!this.isTimetableFitMode || this.timetableFitSyncFrame !== null) {
+      return;
+    }
+
+    this.timetableFitSyncFrame = window.requestAnimationFrame(() => {
+      this.timetableFitSyncFrame = null;
+      this.syncTimetableFitMode(preserveFocus);
+    });
+  }
+
+  private syncTimetableFitMode(preserveFocus = false): void {
+    if (!this.isTimetableFitMode) {
+      return;
+    }
+
+    const nextPixelsPerMinute = this.measureFittedTimetablePixelsPerMinute();
+    if (nextPixelsPerMinute === null) {
+      return;
+    }
+
+    if (
+      this.timetableFitPixelsPerMinute !== null &&
+      Math.abs(this.timetableFitPixelsPerMinute - nextPixelsPerMinute) <= TIMETABLE_FIT_SYNC_EPSILON
+    ) {
+      return;
+    }
+
+    this.timetableFitPixelsPerMinute = nextPixelsPerMinute;
+    this.renderFrame(preserveFocus);
+  }
+
+  private toggleTimetableFitMode(): void {
+    if (!this.data || this.getActiveBoard().courses.length === 0) {
+      return;
+    }
+
+    this.cancelQueuedTimetableFitSync();
+    this.isTimetableFitMode = !this.isTimetableFitMode;
+
+    if (this.isTimetableFitMode) {
+      this.timetableFitPixelsPerMinute = this.measureFittedTimetablePixelsPerMinute();
+    } else {
+      this.timetableFitPixelsPerMinute = null;
+    }
+
+    this.renderFrame(true);
+  }
+
+  private async exportTimetableJpeg(): Promise<void> {
+    if (!this.data || this.isTimetableJpegExporting) {
+      return;
+    }
+
+    const board = this.getActiveBoard();
+    if (board.courses.length === 0) {
+      return;
+    }
+
+    this.isTimetableJpegExporting = true;
+    this.renderFrame(true);
+
+    try {
+      const range = getGridRange(board);
+      const positioned = getPositionedSessions(board).filter((session) => TIMETABLE_DAY_ORDER.includes(session.day));
+      const imageBytes = await renderTimetableToJpegBytes({
+        board,
+        positionedSessions: positioned,
+        range,
+        minimumSessionBlockHeight: this.getMinimumSessionBlockHeight(),
+      });
+      const result = await window.soosta.exportTimetableJpeg({
+        fileName: getTimetableJpegFileName(board.name),
+        bytes: imageBytes,
+      });
+
+      if (!result.cancelled) {
+        this.showBanner({ tone: 'success', text: `시간표를 JPG로 저장했어요. ${result.filePath ?? ''}`.trim() });
+      }
+    } catch (error) {
+      this.showBanner({ tone: 'error', text: this.getErrorMessage(error) });
+    } finally {
+      this.isTimetableJpegExporting = false;
+      this.renderFrame(true);
+    }
   }
 
   private renderInspector(visualState: InspectorVisibility): string {
@@ -1627,10 +1791,22 @@ class SoostaApp {
     const existingCourse = isOpen ? this.getSelectedCourse() : null;
     const course = isOpen
       ? existingCourse ??
-        {
-          ...createBlankCourse(board.courses.length),
-          id: this.pendingCourseId ?? generateId('course'),
-        }
+        (() => {
+          const draftCourse = {
+            ...createBlankCourse(board.courses.length),
+            id: this.pendingCourseId ?? generateId('course'),
+          };
+          const [recommendedColor] = getCourseColorRecommendations(board.courses, {
+            currentCourseId: draftCourse.id,
+            limit: 1,
+            preferFreshColors: true,
+          });
+
+          return {
+            ...draftCourse,
+            color: recommendedColor ?? draftCourse.color,
+          };
+        })()
       : this.closingInspectorCourse;
     const isEditing = isOpen ? Boolean(this.getSelectedCourse()) : this.closingInspectorIsEditing;
 
@@ -1690,13 +1866,7 @@ class SoostaApp {
               <input name="instructor" value="${escapeHtml(course.instructor)}" maxlength="32" placeholder="예: 정민서" />
             </label>
           </div>
-          <label>
-            <span>포인트 컬러</span>
-            <div class="color-field">
-              <input name="color" type="color" value="${sanitizeColor(course.color)}" />
-              <span>타임블록과 카드 포인트 컬러로 사용됩니다.</span>
-            </div>
-          </label>
+          ${this.renderCourseColorField(course)}
           <label>
             <span>메모</span>
             <textarea name="memo" rows="3" placeholder="과제, 발표, 수업 분위기 같은 메모를 남겨보세요.">${escapeHtml(course.memo)}</textarea>
@@ -1726,6 +1896,127 @@ class SoostaApp {
           ${renderIcon('collapse-right')}
         </button>
       </section>
+    `;
+  }
+
+  private renderCourseColorField(course: Course): string {
+    const board = this.getActiveBoard();
+    const currentColor = sanitizeColor(course.color);
+    const rgb = hexColorToRgb(currentColor);
+    const otherCourseCount = board.courses.filter((item) => item.id !== course.id).length;
+    const recommendationHint =
+      otherCourseCount > 0
+        ? '기존 강의 컬러를 먼저 보여드리고, 이어서 다른 팔레트를 추천해요.'
+        : '아직 강의가 없어서 기본 팔레트를 먼저 추천해요.';
+    const recommendations = getCourseColorRecommendations(board.courses, {
+      currentCourseId: course.id,
+      selectedColor: currentColor,
+      limit: 6,
+    });
+
+    return `
+      <div class="form-field">
+        <span>포인트 컬러</span>
+        <div class="color-field-shell">
+          <button
+            type="button"
+            class="color-field-toggle"
+            data-action="toggle-color-field"
+            aria-expanded="${this.isCourseColorFieldExpanded ? 'true' : 'false'}"
+            aria-controls="course-color-panel"
+            aria-label="${this.isCourseColorFieldExpanded ? '추천 색상과 RGB 미세 조정 접기' : '추천 색상과 RGB 미세 조정 펼치기'}"
+          >
+            <span class="color-field-toggle-summary">
+              <span
+                class="color-preview-swatch color-field-toggle-chip"
+                data-color-preview-swatch
+                style="--swatch:${escapeHtml(currentColor)}"
+                aria-hidden="true"
+              ></span>
+              <span class="color-field-toggle-copy">
+                <span class="color-field-toggle-kicker">추천 색상 · RGB 미세 조정</span>
+                <strong data-color-preview-hex>${escapeHtml(currentColor.toUpperCase())}</strong>
+                <span data-color-preview-rgb>R ${rgb.red} · G ${rgb.green} · B ${rgb.blue}</span>
+              </span>
+            </span>
+            <span class="color-field-toggle-label">${this.isCourseColorFieldExpanded ? '접기' : '펼치기'}</span>
+            <span class="color-field-toggle-icon" aria-hidden="true">${renderIcon('chevron-down')}</span>
+          </button>
+          <div class="color-field" id="course-color-panel" ${this.isCourseColorFieldExpanded ? '' : 'hidden'}>
+            <div class="color-field-section">
+              <div class="color-field-heading">
+                <strong>추천 색상</strong>
+                <span>${recommendationHint}</span>
+              </div>
+              <div class="color-swatch-grid">
+                ${recommendations
+                  .map((color) => {
+                    const isActive = sanitizeColor(color) === currentColor;
+                    return `
+                      <button
+                        type="button"
+                        class="color-swatch-button ${isActive ? 'is-active' : ''}"
+                        data-action="recommend-color"
+                        data-color="${escapeHtml(color)}"
+                        data-color-option
+                        aria-pressed="${isActive ? 'true' : 'false'}"
+                      >
+                        <span class="color-swatch-button-chip" style="--swatch:${escapeHtml(color)}" aria-hidden="true"></span>
+                        <span>${escapeHtml(color.toUpperCase())}</span>
+                      </button>
+                    `;
+                  })
+                  .join('')}
+              </div>
+            </div>
+            <div class="color-field-section">
+              <div class="color-field-heading">
+                <strong>RGB 미세 조정</strong>
+                <span>추천한 색을 시작점으로 잡고 수치를 직접 다듬을 수 있어요.</span>
+              </div>
+              <div class="color-picker-row">
+                <input name="color" type="color" value="${currentColor}" aria-label="강의 포인트 컬러" />
+                <div class="color-preview-card">
+                  <span
+                    class="color-preview-swatch"
+                    data-color-preview-swatch
+                    style="--swatch:${escapeHtml(currentColor)}"
+                    aria-hidden="true"
+                  ></span>
+                  <div class="color-preview-copy">
+                    <strong data-color-preview-hex>${escapeHtml(currentColor.toUpperCase())}</strong>
+                    <span data-color-preview-rgb>R ${rgb.red} · G ${rgb.green} · B ${rgb.blue}</span>
+                  </div>
+                </div>
+              </div>
+              <div class="color-rgb-grid">
+                ${this.renderColorChannelField('R', 'red', rgb.red)}
+                ${this.renderColorChannelField('G', 'green', rgb.green)}
+                ${this.renderColorChannelField('B', 'blue', rgb.blue)}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  private renderColorChannelField(label: 'R' | 'G' | 'B', channel: CourseColorChannel, value: number): string {
+    return `
+      <div class="color-channel-field">
+        <span>${label}</span>
+        <input
+          type="number"
+          min="0"
+          max="255"
+          step="1"
+          inputmode="numeric"
+          value="${value}"
+          data-color-control="rgb"
+          data-color-channel="${channel}"
+          aria-label="${label} 값"
+        />
+      </div>
     `;
   }
 
@@ -1833,30 +2124,6 @@ class SoostaApp {
       .join('');
   }
 
-  private renderSessionTimeSelectTrigger(
-    segment: SessionTimeMenuSegment,
-    selectedLabel: string,
-    isOpen: boolean,
-  ): string {
-    return `
-      <div class="session-time-select" data-session-time-select="${segment}" data-open="${isOpen ? 'true' : 'false'}">
-        <span class="session-time-group-label">${SESSION_TIME_SEGMENT_LABELS[segment]}</span>
-        <button
-          type="button"
-          class="session-time-select-trigger"
-          data-session-time-select-trigger="${segment}"
-          data-open="${isOpen ? 'true' : 'false'}"
-          aria-haspopup="listbox"
-          aria-expanded="${isOpen ? 'true' : 'false'}"
-          aria-label="${escapeHtml(`${SESSION_TIME_SEGMENT_LABELS[segment]} ${selectedLabel}`)}"
-        >
-          <span class="session-time-select-value">${escapeHtml(selectedLabel)}</span>
-          <span class="session-time-select-caret" aria-hidden="true">▾</span>
-        </button>
-      </div>
-    `;
-  }
-
   private renderSessionTimeMeridiemButtons(selectedValue: GenericMeridiem, values: GenericMeridiem[]): string {
     return `
       <div class="session-time-meridiem">
@@ -1881,6 +2148,7 @@ class SoostaApp {
     const minuteOptions = getSessionTimeMinuteOptions(timeOptions, meridiem, hour);
     const activeSegment = resolveSessionTimeMenuSegment(openSegment);
     const label = fieldName === 'session-start' ? '시작 시간' : '종료 시간';
+    const selectionSummary = `${SESSION_TIME_MERIDIEM_LABELS[meridiem]} ${Number(hour)}시 ${minute}분`;
     const optionSet =
       activeSegment === 'hour'
         ? {
@@ -1902,13 +2170,12 @@ class SoostaApp {
         aria-label="${escapeHtml(label)} 선택"
       >
         ${this.renderSessionTimeMeridiemButtons(meridiem, meridiemOptions)}
-        <div class="session-time-select-row">
-          ${this.renderSessionTimeSelectTrigger('hour', `${Number(hour)}시`, activeSegment === 'hour')}
-          ${this.renderSessionTimeSelectTrigger('minute', `${minute}분`, activeSegment === 'minute')}
-        </div>
         <div class="session-time-select-menu" data-session-time-menu="${activeSegment}">
           <div class="session-time-select-menu-head">
-            <span class="session-time-select-menu-title">${SESSION_TIME_SEGMENT_LABELS[activeSegment]}</span>
+            <div class="session-time-select-menu-heading">
+              <span class="session-time-select-menu-title">${SESSION_TIME_SEGMENT_LABELS[activeSegment]}</span>
+              <span class="session-time-select-menu-summary">${escapeHtml(selectionSummary)}</span>
+            </div>
             <span class="session-time-select-menu-hint">${
               activeSegment === 'minute' ? '바깥 클릭 또는 Enter로 적용' : '선택 후 다음 단계로 이동'
             }</span>
@@ -2128,15 +2395,6 @@ class SoostaApp {
     this.updateSessionTimeTriggerLabel(endField, nextEndValue);
   }
 
-  private toggleSessionTimeWidgetSegment(segment: SessionTimeMenuSegment): void {
-    if (!this.sessionTimeWidget) {
-      return;
-    }
-
-    this.sessionTimeWidget.openSegment = segment;
-    this.renderOpenSessionTimeWidget();
-  }
-
   private shouldRestoreSessionTimeTriggerFocus(target: HTMLElement | null): boolean {
     if (!target) {
       return true;
@@ -2226,7 +2484,6 @@ class SoostaApp {
     const activeWidget = this.sessionTimeWidget;
     const activeField = activeWidget ? this.getSessionTimeFieldElement(activeWidget.sessionId, activeWidget.fieldName) : null;
     const trigger = target.closest<HTMLButtonElement>('[data-session-time-trigger]');
-    const selectTrigger = target.closest<HTMLButtonElement>('[data-session-time-select-trigger]');
     const option = target.closest<HTMLButtonElement>('[data-session-time-option]');
 
     if (activeWidget && activeField && !activeField.contains(target)) {
@@ -2242,14 +2499,6 @@ class SoostaApp {
 
       this.closeSessionTimeWidget({ reason: 'outside', outsideTarget: target });
       if (trigger) {
-        return true;
-      }
-    }
-
-    if (selectTrigger) {
-      const segment = selectTrigger.dataset.sessionTimeSelectTrigger as SessionTimeMenuSegment | undefined;
-      if (segment) {
-        this.toggleSessionTimeWidgetSegment(segment);
         return true;
       }
     }
@@ -2300,7 +2549,7 @@ class SoostaApp {
           <div class="timetable-grid timetable-grid-${timetableDensity}">
             <div class="timetable-head">
               <div class="timetable-corner">Time</div>
-              ${DAY_ORDER.map(
+              ${TIMETABLE_DAY_ORDER.map(
                 (day) => `
                   <div class="day-head" data-day-head="${day}">
                     <span>${escapeHtml(DAY_LABELS[day].short)}</span>
@@ -2319,7 +2568,7 @@ class SoostaApp {
                   .join('')}
               </div>
               <div class="day-columns">
-                ${DAY_ORDER.map((day) => {
+                ${TIMETABLE_DAY_ORDER.map((day) => {
                   const daySessions = positioned.filter((item) => item.day === day);
                   return `
                     <div class="day-column" data-day-column="${day}" style="height:${height}px">
@@ -2332,7 +2581,10 @@ class SoostaApp {
                       ${daySessions
                         .map((session) => {
                           const top = (session.startMinutes - startMinutes) * pixelsPerMinute;
-                          const blockHeight = Math.max(44, (session.endMinutes - session.startMinutes) * pixelsPerMinute - 8);
+                          const blockHeight = Math.max(
+                            this.getMinimumSessionBlockHeight(),
+                            (session.endMinutes - session.startMinutes) * pixelsPerMinute - 8,
+                          );
                           const blockLayout = getSessionBlockLayout(blockHeight, session.widthPercent, session.courseTitle.length);
                           const width = `calc(${session.widthPercent}% - 10px)`;
                           const left = `calc(${session.leftPercent}% + 6px)`;
@@ -2400,35 +2652,6 @@ class SoostaApp {
         </div>
         ${item.isOngoing ? '<span class="agenda-state live">진행 중</span>' : item.isNext ? '<span class="agenda-state">다음 수업</span>' : ''}
       </button>
-    `;
-  }
-
-  private renderNextSession(
-    item: AgendaItem,
-    remindersEnabled: boolean,
-    reminderLeadMinutes: readonly LectureReminderLeadMinutes[],
-  ): string {
-    return `
-      <div class="next-card">
-        <div class="next-card-head">
-          <span class="agenda-swatch" style="--swatch:${sanitizeColor(item.color)}"></span>
-          <div>
-            <strong>${escapeHtml(item.title)}</strong>
-            <p>${escapeHtml(DAY_LABELS[item.day].full)} · ${escapeHtml(item.start)}–${escapeHtml(item.end)}</p>
-          </div>
-        </div>
-        <div class="next-card-meta">
-          <span>${escapeHtml(item.location || '장소 미정')}</span>
-          <span>${escapeHtml(item.instructor || '교수 정보 없음')}</span>
-        </div>
-        <p class="next-card-reminder">${
-          remindersEnabled
-            ? reminderLeadMinutes.length > 0
-              ? `알림 · ${formatReminderLeadList(reminderLeadMinutes)}`
-              : '알림 · 시각 미선택'
-            : '알림 · 현재 꺼짐'
-        }</p>
-      </div>
     `;
   }
 
@@ -2726,6 +2949,27 @@ class SoostaApp {
         await this.deleteCourse(courseId, false);
         return;
       }
+      case 'toggle-color-field': {
+        this.isCourseColorFieldExpanded = !this.isCourseColorFieldExpanded;
+        const form = element.closest<HTMLFormElement>('form');
+        if (form?.id === 'course-form') {
+          this.syncCourseColorFieldDisclosure(form);
+        } else {
+          this.renderFrame(true);
+        }
+        return;
+      }
+      case 'recommend-color': {
+        const color = element.dataset.color;
+        const form = this.root.querySelector<HTMLFormElement>('#course-form');
+        if (!color || !form) {
+          return;
+        }
+
+        this.applyCourseColor(form, color);
+        await this.handleCourseInput(form);
+        return;
+      }
       case 'add-session': {
         const course = this.getEditableCourse();
         const nextCourse = {
@@ -2843,6 +3087,12 @@ class SoostaApp {
       }
       case 'test-lecture-reminder':
         await this.triggerManualLectureReminder();
+        return;
+      case 'export-timetable-jpg':
+        await this.exportTimetableJpeg();
+        return;
+      case 'toggle-timetable-fit':
+        this.toggleTimetableFitMode();
         return;
       case 'export-data': {
         try {
@@ -3008,8 +3258,14 @@ class SoostaApp {
   }
 
   private shouldDeferFormMutation(event: Event, target: HTMLElement): boolean {
-    if (target instanceof HTMLInputElement && target.type === 'color' && event.type === 'input') {
-      return true;
+    if (target instanceof HTMLInputElement && event.type === 'input') {
+      if (target.type === 'color') {
+        return true;
+      }
+
+      if (target.dataset.colorControl === 'rgb') {
+        return true;
+      }
     }
 
     if (!isCompositionTextField(target)) {
@@ -3135,6 +3391,116 @@ class SoostaApp {
     });
   }
 
+  private syncCourseColorControls(form: HTMLFormElement, target: HTMLElement, commitRgbInputs = false): void {
+    if (!(target instanceof HTMLInputElement)) {
+      return;
+    }
+
+    if (target.type === 'color') {
+      this.applyCourseColor(form, target.value);
+      return;
+    }
+
+    if (target.dataset.colorControl !== 'rgb') {
+      return;
+    }
+
+    const colorInput = form.querySelector<HTMLInputElement>('input[name="color"]');
+    const currentColor = sanitizeColor(colorInput?.value ?? '#7c72ff');
+    const currentRgb = hexColorToRgb(currentColor);
+    const nextColor = rgbToHexColor({
+      red: this.readCourseColorChannel(form, 'red', currentRgb.red),
+      green: this.readCourseColorChannel(form, 'green', currentRgb.green),
+      blue: this.readCourseColorChannel(form, 'blue', currentRgb.blue),
+    });
+
+    this.applyCourseColor(form, nextColor, { syncRgbInputs: commitRgbInputs });
+  }
+
+  private applyCourseColor(form: HTMLFormElement, color: string, options: { syncRgbInputs?: boolean } = {}): void {
+    const nextColor = sanitizeColor(color);
+    const colorInput = form.querySelector<HTMLInputElement>('input[name="color"]');
+    if (!colorInput) {
+      return;
+    }
+
+    colorInput.value = nextColor;
+
+    const rgb = hexColorToRgb(nextColor);
+    if (options.syncRgbInputs !== false) {
+      (['red', 'green', 'blue'] as const).forEach((channel) => {
+        const input = form.querySelector<HTMLInputElement>(
+          `[data-color-control="rgb"][data-color-channel="${channel}"]`,
+        );
+        if (input) {
+          input.value = String(rgb[channel]);
+        }
+      });
+    }
+
+    this.updateCourseColorPreview(form, nextColor, rgb);
+  }
+
+  private readCourseColorChannel(form: HTMLFormElement, channel: CourseColorChannel, fallback: number): number {
+    const input = form.querySelector<HTMLInputElement>(`[data-color-control="rgb"][data-color-channel="${channel}"]`);
+    if (!input) {
+      return fallback;
+    }
+
+    const parsed = Number(input.value);
+    if (!Number.isFinite(parsed)) {
+      return fallback;
+    }
+
+    return Math.max(0, Math.min(255, Math.round(parsed)));
+  }
+
+  private syncCourseColorFieldDisclosure(form: HTMLFormElement): void {
+    const toggle = form.querySelector<HTMLButtonElement>('[data-action="toggle-color-field"]');
+    const panel = form.querySelector<HTMLElement>('#course-color-panel');
+    if (!toggle || !panel) {
+      this.renderFrame(true);
+      return;
+    }
+
+    const isExpanded = this.isCourseColorFieldExpanded;
+    toggle.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
+    toggle.setAttribute('aria-label', isExpanded ? '추천 색상과 RGB 미세 조정 접기' : '추천 색상과 RGB 미세 조정 펼치기');
+
+    const label = toggle.querySelector<HTMLElement>('.color-field-toggle-label');
+    if (label) {
+      label.textContent = isExpanded ? '접기' : '펼치기';
+    }
+
+    if (isExpanded) {
+      panel.removeAttribute('hidden');
+      return;
+    }
+
+    panel.setAttribute('hidden', '');
+  }
+
+  private updateCourseColorPreview(form: HTMLFormElement, color: string, rgb = hexColorToRgb(color)): void {
+    const normalizedColor = sanitizeColor(color);
+    [...form.querySelectorAll<HTMLElement>('[data-color-preview-swatch]')].forEach((previewSwatch) => {
+      previewSwatch.style.setProperty('--swatch', normalizedColor);
+    });
+
+    [...form.querySelectorAll<HTMLElement>('[data-color-preview-hex]')].forEach((previewHex) => {
+      previewHex.textContent = normalizedColor.toUpperCase();
+    });
+
+    [...form.querySelectorAll<HTMLElement>('[data-color-preview-rgb]')].forEach((previewRgb) => {
+      previewRgb.textContent = `R ${rgb.red} · G ${rgb.green} · B ${rgb.blue}`;
+    });
+
+    [...form.querySelectorAll<HTMLElement>('[data-color-option]')].forEach((option) => {
+      const isActive = sanitizeColor(option.dataset.color ?? '') === normalizedColor;
+      option.classList.toggle('is-active', isActive);
+      option.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+    });
+  }
+
   private readCourseForm(form: HTMLFormElement): Course {
     const id = this.readTextField(form, 'course-id') || generateId('course');
     const sessions = [...form.querySelectorAll<HTMLElement>('.session-row')].map((row) => ({
@@ -3156,7 +3522,7 @@ class SoostaApp {
       location: this.readTextField(form, 'location'),
       credits: credits !== null && Number.isFinite(credits) ? credits : null,
       memo: this.readTextField(form, 'memo'),
-      color: this.readTextField(form, 'color') || '#7c72ff',
+      color: sanitizeColor(this.readTextField(form, 'color') || '#7c72ff'),
       sessions,
     });
   }
@@ -3209,6 +3575,7 @@ class SoostaApp {
     if (this.dragState) {
       this.renderDragPreview();
     }
+    this.queueTimetableFitSync(preserveFocus);
   }
 
   private queueInspectorCloseButtonPositionSync(): void {
@@ -3695,7 +4062,7 @@ class SoostaApp {
     const board = this.getActiveBoard();
     const pixelsPerMinute = this.getTimetablePixelsPerMinute();
     const top = (this.dragState.previewStartMinutes - this.dragState.gridStartMinutes) * pixelsPerMinute;
-    const blockHeight = Math.max(44, this.dragState.durationMinutes * pixelsPerMinute - 8);
+    const blockHeight = Math.max(this.getMinimumSessionBlockHeight(), this.dragState.durationMinutes * pixelsPerMinute - 8);
     const course = board.courses.find((item) => item.id === this.dragState?.courseId);
     const preview = this.root.querySelector<HTMLElement>('.session-drag-preview') ?? document.createElement('div');
 
@@ -3803,7 +4170,7 @@ class SoostaApp {
   }
 
   private getTimetablePixelsPerMinute(): number {
-    return getTimetablePixelsPerMinute(this.viewportHeight || this.getViewportHeight());
+    return this.timetableFitPixelsPerMinute ?? getTimetablePixelsPerMinute(this.viewportHeight || this.getViewportHeight());
   }
 
   private syncSessionDragToViewport(): void {

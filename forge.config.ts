@@ -13,15 +13,15 @@ import { FuseV1Options, FuseVersion } from '@electron/fuses';
 import { mainConfig } from './webpack.main.config';
 import { rendererConfig } from './webpack.renderer.config';
 
+const packagedAppLogo = path.resolve(__dirname, 'logo/logo.png');
 const appIconRoot = path.resolve(__dirname, 'assets/icons/soosta-icon');
-const appIconPng = `${appIconRoot}.png`;
 const appIconIco = `${appIconRoot}.ico`;
 
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
     icon: appIconRoot,
-    extraResource: [path.resolve(__dirname, 'logo/soosta-logo.png')],
+    extraResource: [packagedAppLogo],
   },
   rebuildConfig: {},
   makers: [
@@ -32,12 +32,12 @@ const config: ForgeConfig = {
     new MakerZIP({}, ['darwin']),
     new MakerRpm({
       options: {
-        icon: appIconPng,
+        icon: packagedAppLogo,
       },
     }),
     new MakerDeb({
       options: {
-        icon: appIconPng,
+        icon: packagedAppLogo,
       },
     }),
   ],

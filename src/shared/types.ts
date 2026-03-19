@@ -1,4 +1,4 @@
-export type DayKey = 'MON' | 'TUE' | 'WED' | 'THU' | 'FRI' | 'SAT';
+export type DayKey = 'MON' | 'TUE' | 'WED' | 'THU' | 'FRI';
 
 export interface CourseSession {
   id: string;
@@ -103,6 +103,11 @@ export interface ExportResult {
   filePath?: string;
 }
 
+export interface TimetableJpegExportRequest {
+  fileName: string;
+  bytes: Uint8Array;
+}
+
 export interface ImportResult {
   cancelled: boolean;
   filePath?: string;
@@ -137,6 +142,7 @@ export interface SoostaApi extends WindowControlsApi {
   loadData: () => Promise<AppData>;
   saveData: (data: AppData) => Promise<AppData>;
   exportData: (data: AppData) => Promise<ExportResult>;
+  exportTimetableJpeg: (payload: TimetableJpegExportRequest) => Promise<ExportResult>;
   importData: () => Promise<ImportResult>;
   showLectureReminder: (payload: NativeLectureReminderPayload) => Promise<void>;
 }

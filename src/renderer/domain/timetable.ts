@@ -26,7 +26,7 @@ const MAX_SESSION_END_MINUTES = 23 * 60 + 30;
 const MIN_SESSION_DURATION_MINUTES = TIME_STEP_MINUTES;
 
 const jsDayToDayKey = (day: number) => {
-  if (day >= 1 && day <= 6) {
+  if (day >= 1 && day <= DAY_ORDER.length) {
     return DAY_ORDER[day - 1];
   }
 

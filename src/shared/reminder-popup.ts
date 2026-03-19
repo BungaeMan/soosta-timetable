@@ -35,7 +35,7 @@ export const createReminderPopupMarkup = (payload: NativeLectureReminderPayload)
             --stroke: rgba(121, 136, 184, 0.22);
             --text: #2a3553;
             --muted: #647394;
-            --shadow: rgba(79, 97, 150, 0.12);
+            --shadow: rgba(79, 97, 150, 0.08);
           }
 
           * {
@@ -83,7 +83,7 @@ export const createReminderPopupMarkup = (payload: NativeLectureReminderPayload)
               linear-gradient(180deg, var(--surface), var(--surface-soft));
             color: var(--text);
             border: 0;
-            box-shadow: 0 12px 24px var(--shadow);
+            box-shadow: 0 10px 20px var(--shadow);
           }
 
           .header {
@@ -123,7 +123,7 @@ export const createReminderPopupMarkup = (payload: NativeLectureReminderPayload)
             height: 8px;
             border-radius: 999px;
             background: var(--accent);
-            box-shadow: 0 0 0 4px rgba(124, 114, 255, 0.16);
+            box-shadow: 0 0 0 3px rgba(124, 114, 255, 0.12);
           }
 
           .close-button {
@@ -138,7 +138,7 @@ export const createReminderPopupMarkup = (payload: NativeLectureReminderPayload)
             font-size: 18px;
             line-height: 1;
             cursor: pointer;
-            box-shadow: 0 4px 10px rgba(79, 97, 150, 0.08);
+            box-shadow: 0 3px 8px rgba(79, 97, 150, 0.06);
             transition:
               transform 120ms ease,
               background-color 120ms ease,

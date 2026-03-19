@@ -3,14 +3,14 @@ import type { DayKey } from './types';
 export const APP_NAME = 'Soosta Timetable';
 export const DATA_VERSION = 2;
 export const DATA_FILE_NAME = 'soosta-timetable.json';
-export const DAY_ORDER: DayKey[] = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+export const DAY_ORDER: DayKey[] = ['MON', 'TUE', 'WED', 'THU', 'FRI'];
+export const TIMETABLE_DAY_ORDER: DayKey[] = DAY_ORDER;
 export const DAY_LABELS: Record<DayKey, { short: string; full: string; english: string }> = {
   MON: { short: '월', full: '월요일', english: 'Monday' },
   TUE: { short: '화', full: '화요일', english: 'Tuesday' },
   WED: { short: '수', full: '수요일', english: 'Wednesday' },
   THU: { short: '목', full: '목요일', english: 'Thursday' },
   FRI: { short: '금', full: '금요일', english: 'Friday' },
-  SAT: { short: '토', full: '토요일', english: 'Saturday' },
 };
 export const COLOR_PALETTE = [
   '#7c72ff',
@@ -34,6 +34,7 @@ export const IPC_CHANNELS = {
   loadData: 'soosta:load-data',
   saveData: 'soosta:save-data',
   exportData: 'soosta:export-data',
+  exportTimetableJpeg: 'soosta:export-timetable-jpeg',
   importData: 'soosta:import-data',
   showLectureReminder: 'soosta:show-lecture-reminder',
   minimizeWindow: 'soosta:minimize-window',

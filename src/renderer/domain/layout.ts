@@ -32,6 +32,22 @@ export const getTimetablePixelsPerMinute = (viewportHeight = Number.POSITIVE_INF
   return STANDARD_TIMETABLE_PIXELS_PER_MINUTE;
 };
 
+export const getViewportFittedTimetablePixelsPerMinute = (
+  availableHeight: number,
+  minuteSpan: number,
+  fallbackPixelsPerMinute = STANDARD_TIMETABLE_PIXELS_PER_MINUTE,
+): number => {
+  if (!Number.isFinite(availableHeight) || availableHeight <= 0) {
+    return fallbackPixelsPerMinute;
+  }
+
+  if (!Number.isFinite(minuteSpan) || minuteSpan <= 0) {
+    return fallbackPixelsPerMinute;
+  }
+
+  return Number((availableHeight / minuteSpan).toFixed(4));
+};
+
 export const getRendererLayout = (viewportWidth: number, viewportHeight = Number.POSITIVE_INFINITY) => {
   const viewportBand = getRendererViewportBand(viewportWidth);
   const viewportHeightBand = getRendererViewportHeightBand(viewportHeight);
