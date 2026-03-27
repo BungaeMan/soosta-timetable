@@ -9,6 +9,12 @@ export interface RgbColorChannels {
   blue: number;
 }
 
+interface HslColorChannels {
+  hue: number;
+  saturation: number;
+  lightness: number;
+}
+
 const colorPattern = /^#(?:[0-9a-fA-F]{3}){1,2}$/;
 
 const expandHexColor = (value: string): string =>
@@ -34,6 +40,168 @@ export const rgbToHexColor = ({ red, green, blue }: RgbColorChannels): string =>
   `#${[red, green, blue]
     .map((channel) => clampRgbChannel(channel).toString(16).padStart(2, '0'))
     .join('')}`;
+
+const RANDOM_COLOR_ATTEMPTS = 32;
+const RANDOM_COLOR_FALLBACK_STEPS = 48;
+const MIN_RANDOM_COLOR_SATURATION = 58;
+const MAX_RANDOM_COLOR_SATURATION = 78;
+const MIN_RANDOM_COLOR_LIGHTNESS = 36;
+const MAX_RANDOM_COLOR_LIGHTNESS = 52;
+const MIN_RANDOM_COLOR_CONTRAST_WITH_WHITE = 3.6;
+const MIN_RANDOM_COLOR_DISTANCE = 96;
+const WHITE_COLOR = '#ffffff';
+
+const normalizeHue = (value: number): number => ((value % 360) + 360) % 360;
+const getRandomNumberInRange = (min: number, max: number): number => min + Math.random() * (max - min);
+
+const hslToRgb = ({ hue, saturation, lightness }: HslColorChannels): RgbColorChannels => {
+  const normalizedHue = normalizeHue(hue) / 360;
+  const normalizedSaturation = Math.max(0, Math.min(100, saturation)) / 100;
+  const normalizedLightness = Math.max(0, Math.min(100, lightness)) / 100;
+
+  if (normalizedSaturation === 0) {
+    const channel = normalizedLightness * 255;
+    return { red: channel, green: channel, blue: channel };
+  }
+
+  const hueToChannel = (p: number, q: number, t: number): number => {
+    let adjustedT = t;
+    if (adjustedT < 0) adjustedT += 1;
+    if (adjustedT > 1) adjustedT -= 1;
+    if (adjustedT < 1 / 6) return p + (q - p) * 6 * adjustedT;
+    if (adjustedT < 1 / 2) return q;
+    if (adjustedT < 2 / 3) return p + (q - p) * (2 / 3 - adjustedT) * 6;
+    return p;
+  };
+
+  const q =
+    normalizedLightness < 0.5
+      ? normalizedLightness * (1 + normalizedSaturation)
+      : normalizedLightness + normalizedSaturation - normalizedLightness * normalizedSaturation;
+  const p = 2 * normalizedLightness - q;
+
+  return {
+    red: hueToChannel(p, q, normalizedHue + 1 / 3) * 255,
+    green: hueToChannel(p, q, normalizedHue) * 255,
+    blue: hueToChannel(p, q, normalizedHue - 1 / 3) * 255,
+  };
+};
+
+const rgbToHsl = ({ red, green, blue }: RgbColorChannels): HslColorChannels => {
+  const normalizedRed = clampRgbChannel(red) / 255;
+  const normalizedGreen = clampRgbChannel(green) / 255;
+  const normalizedBlue = clampRgbChannel(blue) / 255;
+  const maxChannel = Math.max(normalizedRed, normalizedGreen, normalizedBlue);
+  const minChannel = Math.min(normalizedRed, normalizedGreen, normalizedBlue);
+  const delta = maxChannel - minChannel;
+  const lightness = (maxChannel + minChannel) / 2;
+
+  if (delta === 0) {
+    return {
+      hue: 0,
+      saturation: 0,
+      lightness: lightness * 100,
+    };
+  }
+
+  const saturation =
+    lightness > 0.5 ? delta / (2 - maxChannel - minChannel) : delta / (maxChannel + minChannel);
+
+  let hue = 0;
+  switch (maxChannel) {
+    case normalizedRed:
+      hue = (normalizedGreen - normalizedBlue) / delta + (normalizedGreen < normalizedBlue ? 6 : 0);
+      break;
+    case normalizedGreen:
+      hue = (normalizedBlue - normalizedRed) / delta + 2;
+      break;
+    default:
+      hue = (normalizedRed - normalizedGreen) / delta + 4;
+      break;
+  }
+
+  return {
+    hue: normalizeHue(hue * 60),
+    saturation: saturation * 100,
+    lightness: lightness * 100,
+  };
+};
+
+const buildRandomCourseColor = (): string =>
+  rgbToHexColor(
+    hslToRgb({
+      hue: getRandomNumberInRange(0, 360),
+      saturation: getRandomNumberInRange(MIN_RANDOM_COLOR_SATURATION, MAX_RANDOM_COLOR_SATURATION),
+      lightness: getRandomNumberInRange(MIN_RANDOM_COLOR_LIGHTNESS, MAX_RANDOM_COLOR_LIGHTNESS),
+    }),
+  );
+
+const getRelativeLuminance = (color: string): number => {
+  const { red, green, blue } = hexColorToRgb(color);
+  const normalizeChannel = (channel: number): number => {
+    const normalized = clampRgbChannel(channel) / 255;
+    return normalized <= 0.03928 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+  };
+
+  return 0.2126 * normalizeChannel(red) + 0.7152 * normalizeChannel(green) + 0.0722 * normalizeChannel(blue);
+};
+
+const getContrastRatio = (left: string, right: string): number => {
+  const leftLuminance = getRelativeLuminance(left);
+  const rightLuminance = getRelativeLuminance(right);
+  const brighter = Math.max(leftLuminance, rightLuminance);
+  const darker = Math.min(leftLuminance, rightLuminance);
+
+  return (brighter + 0.05) / (darker + 0.05);
+};
+
+const getRgbDistance = (left: string, right: string): number => {
+  const leftRgb = hexColorToRgb(left);
+  const rightRgb = hexColorToRgb(right);
+
+  return Math.hypot(leftRgb.red - rightRgb.red, leftRgb.green - rightRgb.green, leftRgb.blue - rightRgb.blue);
+};
+
+const isReadableRandomCourseColor = (candidate: string, excludedColors: Set<string>): boolean =>
+  getContrastRatio(candidate, WHITE_COLOR) >= MIN_RANDOM_COLOR_CONTRAST_WITH_WHITE &&
+  [...excludedColors].every((color) => getRgbDistance(candidate, color) >= MIN_RANDOM_COLOR_DISTANCE);
+
+const resolveRandomCourseColorFallback = (excludedColors: Set<string>): string => {
+  const seedHue = excludedColors.size > 0 ? rgbToHsl(hexColorToRgb([...excludedColors][0])).hue : 248;
+
+  for (let step = 0; step < RANDOM_COLOR_FALLBACK_STEPS; step += 1) {
+    const saturationSpread = MAX_RANDOM_COLOR_SATURATION - MIN_RANDOM_COLOR_SATURATION;
+    const lightnessSpread = MAX_RANDOM_COLOR_LIGHTNESS - MIN_RANDOM_COLOR_LIGHTNESS;
+    const candidate = rgbToHexColor(
+      hslToRgb({
+        hue: seedHue + 37 + step * 47,
+        saturation: MIN_RANDOM_COLOR_SATURATION + ((step * 7) % Math.max(1, saturationSpread)),
+        lightness: MIN_RANDOM_COLOR_LIGHTNESS + ((step * 5) % Math.max(1, lightnessSpread)),
+      }),
+    );
+
+    if (isReadableRandomCourseColor(candidate, excludedColors)) {
+      return candidate;
+    }
+  }
+
+  return '#5e4fd1';
+};
+
+export const generateRandomCourseColor = (options: { excludeColors?: string[] } = {}): string => {
+  const excludedColors = new Set(
+    (options.excludeColors ?? []).filter((color): color is string => Boolean(color)).map((color) => sanitizeCourseColor(color)),
+  );
+
+  for (let attempt = 0; attempt < RANDOM_COLOR_ATTEMPTS; attempt += 1) {
+    const candidate = buildRandomCourseColor();
+    if (isReadableRandomCourseColor(candidate, excludedColors)) {
+      return candidate;
+    }
+  }
+
+  return resolveRandomCourseColorFallback(excludedColors);
+};
 
 export const getCourseColorRecommendations = (
   courses: Course[],
@@ -94,8 +262,6 @@ export const getCourseColorRecommendations = (
     }
   };
 
-  pushRecommendation(selectedColor);
-
   if (options.preferFreshColors) {
     rankedPalette.forEach(pushRecommendation);
     rankedObservedColors.forEach(pushRecommendation);
@@ -104,7 +270,12 @@ export const getCourseColorRecommendations = (
     rankedPalette.forEach(pushRecommendation);
   }
 
-  return recommendations.slice(0, limit);
+  const visibleRecommendations = recommendations.slice(0, limit);
+  if (selectedColor && !visibleRecommendations.includes(selectedColor)) {
+    return [...visibleRecommendations.slice(0, Math.max(0, limit - 1)), selectedColor];
+  }
+
+  return visibleRecommendations;
 };
 
 export const createBlankSession = (): CourseSession =>

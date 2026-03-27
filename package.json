@@ -6,9 +6,11 @@
   "main": ".webpack/main",
   "private": true,
   "scripts": {
+    "prestart": "node ./scripts/cleanup-dev-processes.mjs",
     "start": "electron-forge start",
     "package": "electron-forge package",
     "make": "electron-forge make",
+    "release:windows": "node ./scripts/release-windows-setup.mjs",
     "publish": "electron-forge publish",
     "lint": "eslint --ext .ts,.tsx .",
     "typecheck": "tsc --noEmit",

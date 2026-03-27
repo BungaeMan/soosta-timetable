@@ -1,12 +1,6 @@
-import { APP_NAME, DAY_LABELS, DAY_ORDER, LECTURE_REMINDER_LEAD_MINUTES, TIMETABLE_DAY_ORDER } from '../shared/constants';
+import { APP_NAME, DAY_LABELS, TIMETABLE_DAY_ORDER } from '../shared/constants';
 import { generateId } from '../shared/data';
-import {
-  formatLectureReminderLeadMinutes,
-  formatLectureReminderLeadMinutesList,
-  getDefaultLectureReminderLeadMinutes,
-  parseLectureReminderLeadMinutesInput,
-  sortUniqueLectureReminderLeadMinutes,
-} from '../shared/reminders';
+import { parseLectureReminderLeadMinutesInput } from '../shared/reminders';
 import type {
   AgendaItem,
   AppData,
@@ -14,7 +8,6 @@ import type {
   CourseSession,
   DayKey,
   LectureReminderLeadMinutes,
-  NativeLectureReminderPayload,
   TimetableBoard,
   Unsubscribe,
 } from '../shared/types';
@@ -28,384 +21,139 @@ import {
   getViewportFittedTimetablePixelsPerMinute,
 } from './domain/layout';
 import {
-  getDueLectureReminderEvents,
-  getNextUpcomingSessionOccurrence,
-  getReminderSweepStartMs,
-} from './domain/reminders';
-import {
-  createBlankBoard,
   createBlankCourse,
-  createBlankSession,
   getCourseColorRecommendations,
   hexColorToRgb,
-  duplicateBoard,
   normalizeCourseDraft,
   rgbToHexColor,
   restoreActiveBoardFromPersisted,
-  sanitizeCourseColor,
   validateCourse,
 } from './domain/model';
+import { getBoardStats, getGridRange, getPositionedSessions, getTodayAgenda } from './domain/timetable';
+import { minutesToTime } from './domain/time';
+import type {
+  ActiveLectureReminder,
+  Banner,
+  BannerVisibility,
+  CourseColorChannel,
+  FocusSnapshot,
+  InspectorVisibility,
+  PendingSessionDrag,
+  PendingSessionTimeTarget,
+  ScrollSnapshot,
+  SessionContextMenu,
+  SessionDragState,
+  SessionTimeFieldName,
+  SessionTimeWidgetCloseReason,
+  SessionTimeWidgetState,
+} from './app/shared';
 import {
-  getCurrentTimeIndicatorState,
-  getBoardStats,
-  getGridRange,
-  getPositionedSessions,
-  getSessionDropRejectMessage,
-  getTodayAgenda,
-  resolveSessionDropAction,
-  resolveDraggedSessionPlacement,
-  swapBoardSessions,
-  updateBoardSessionSchedule,
-} from './domain/timetable';
+  consumeSuppressedSessionBlockClick as consumeSuppressedSessionBlockClickFromModule,
+  finishSessionDrag as finishSessionDragFromModule,
+  handleSessionDragMove as handleSessionDragMoveFromModule,
+  renderDragPreview as renderDragPreviewFromModule,
+  resetSessionDrag as resetSessionDragFromModule,
+  startSessionDrag as startSessionDragFromModule,
+  syncSessionDragToViewport as syncSessionDragToViewportFromModule,
+} from './app/drag-drop';
 import {
-  coerceMeridiemTimeParts,
-  coerceTimeToOptions,
-  formatDuration,
-  getNextSessionTimeMenuSegment,
-  type GenericMeridiem,
-  getSessionEndTimeOptions,
-  getSessionEndTimeOptionsAfterStart,
-  getSessionStartTimeOptions,
-  minutesToTime,
-  resolveSessionTimeMenuSegment,
-  splitMeridiemTimeParts,
-  type TimeWidgetMenuSegment,
-  type TimeWidgetSegment,
-  timeToMinutes,
-} from './domain/time';
+  AUTOSAVE_DELAY_MS,
+  DEFAULT_TIMETABLE_BLOCK_MIN_HEIGHT,
+  escapeHtml,
+  FITTED_TIMETABLE_BLOCK_MIN_HEIGHT,
+  formatReminderLeadList,
+  getCurrentWeekday,
+  getSessionBlockLayout,
+  INSPECTOR_SPRING_DURATION_MS,
+  isCompositionTextField,
+  prefersReducedMotion,
+  renderIcon,
+  resolveDesktopPlatform,
+  sanitizeColor,
+  SCROLLABLE_SELECTOR,
+  SCROLLBAR_ACTIVE_CLASS,
+  SCROLLBAR_IDLE_DELAY_MS,
+  SCROLL_SNAPSHOT_SELECTORS,
+  TIMETABLE_FIT_SYNC_EPSILON,
+} from './app/shared';
+import {
+  renderLoadingCard,
+  renderStatusActions as renderStatusActionsMarkup,
+  renderWindowControls as renderWindowControlsMarkup,
+} from './app/rendering';
+import {
+  renderContentSection,
+  renderCourseColorFieldSection,
+  renderInspectorPanelSection,
+  renderSessionRowMarkup,
+  renderSidebarSection,
+} from './app/render-sections';
+import { handleRendererAction } from './app/actions';
+import {
+  startCurrentTimeTicker as startCurrentTimeTickerFromModule,
+  stopCurrentTimeTicker as stopCurrentTimeTickerFromModule,
+  syncCurrentTimeUi as syncCurrentTimeUiFromModule,
+  queueCurrentTimeIndicatorSync as queueCurrentTimeIndicatorSyncFromModule,
+  cancelQueuedCurrentTimeIndicatorSync as cancelQueuedCurrentTimeIndicatorSyncFromModule,
+  syncCurrentTimeIndicator as syncCurrentTimeIndicatorFromModule,
+  renderBannerToast as renderBannerToastFromModule,
+  startReminderSweepLoop as startReminderSweepLoopFromModule,
+  stopReminderSweepLoop as stopReminderSweepLoopFromModule,
+  runReminderSweep as runReminderSweepFromModule,
+  areLectureRemindersEnabled as areLectureRemindersEnabledFromModule,
+  getLectureReminderLeadMinutes as getLectureReminderLeadMinutesFromModule,
+  getLectureReminderSummary as getLectureReminderSummaryFromModule,
+  triggerManualLectureReminder as triggerManualLectureReminderFromModule,
+  dismissLectureReminder as dismissLectureReminderFromModule,
+  showBanner as showBannerFromModule,
+  dismissBanner as dismissBannerFromModule,
+} from './app/feedback';
+import { bindRendererEvents } from './app/events';
+import {
+  closeSessionTimeWidget as closeSessionTimeWidgetFromModule,
+  handleSessionTimeWidgetClick as handleSessionTimeWidgetClickFromModule,
+  renderOpenSessionTimeWidget as renderOpenSessionTimeWidgetFromModule,
+  renderSessionTimeInput as renderSessionTimeInputFromModule,
+  restorePendingSessionTimeTriggerFocus as restorePendingSessionTimeTriggerFocusFromModule,
+  resumePendingSessionTimeWidgetOpen as resumePendingSessionTimeWidgetOpenFromModule,
+  syncSessionEndTimeAfterStartChange as syncSessionEndTimeAfterStartChangeFromModule,
+} from './app/session-time';
 
-type BannerTone = 'success' | 'error' | 'info';
-type BannerVisibility = 'hidden' | 'entering' | 'visible' | 'leaving';
-type InspectorVisibility = 'opening' | 'open' | 'closing' | 'closed';
-
-interface Banner {
-  tone: BannerTone;
-  text: string;
-}
-
-interface ActiveLectureReminder {
-  reminderId: string;
-  leadMinutes: LectureReminderLeadMinutes;
-  courseTitle: string;
-  location: string;
-  startsAt: string;
-  body: string;
-  isTest?: boolean;
-}
-
-interface SessionContextMenu {
-  courseId: string;
-  courseTitle: string;
-  clientX: number;
-  clientY: number;
-  accentColor: string;
-  scheduleLabel: string;
-  locationLabel: string;
-}
-
-type SessionTimeFieldName = 'session-start' | 'session-end';
-type SessionTimeWidgetSegment = TimeWidgetSegment;
-type SessionTimeMenuSegment = TimeWidgetMenuSegment;
-type SessionTimeWidgetCloseReason = 'escape' | 'enter' | 'minute' | 'outside' | 'toggle' | 'render' | 'resize' | 'unload';
-
-interface SessionTimeWidgetState {
-  sessionId: string;
-  fieldName: SessionTimeFieldName;
-  committedValue: string;
-  draftValue: string;
-  openSegment: SessionTimeMenuSegment | null;
-}
-
-interface PendingSessionTimeTarget {
-  sessionId: string;
-  fieldName: SessionTimeFieldName;
-}
-
-type SessionBlockDensity = 'spacious' | 'compact' | 'minimal';
-
-interface SessionBlockLayout {
-  density: SessionBlockDensity;
-  titleLines: 1 | 2;
-  showTime: boolean;
-  showLocation: boolean;
-  showConflictChip: boolean;
-}
-
-type CourseColorChannel = 'red' | 'green' | 'blue';
-
-const AUTOSAVE_DELAY_MS = 360;
-const BANNER_EXIT_DURATION_MS = 560;
-const BANNER_AUTO_DISMISS_MS: Record<BannerTone, number> = {
-  success: 2600,
-  info: 3200,
-  error: 4200,
-};
-const SCROLLBAR_IDLE_DELAY_MS = 720;
-const SCROLLBAR_ACTIVE_CLASS = 'is-scrollbar-active';
-const SCROLLABLE_SELECTOR = '.app-layout, .timetable-scroll, .course-list-scroll, textarea';
-const SCROLL_SNAPSHOT_SELECTORS = ['.app-layout', '.timetable-scroll'];
-const INSPECTOR_SPRING_DURATION_MS = 760;
-const SESSION_DRAG_START_DISTANCE_PX = 6;
-const CURRENT_TIME_TICK_MS = 60 * 1000;
-const CURRENT_TIME_TICK_BUFFER_MS = 48;
-const FITTED_TIMETABLE_BLOCK_MIN_HEIGHT = 28;
-const DEFAULT_TIMETABLE_BLOCK_MIN_HEIGHT = 44;
-const TIMETABLE_FIT_SYNC_EPSILON = 0.005;
-const REMINDER_SWEEP_INTERVAL_MS = 15 * 1000;
-const REMINDER_SWEEP_LOOKBACK_MS = 90 * 1000;
-const REMINDER_CARD_AUTO_DISMISS_MS = 12 * 1000;
-
-interface FocusSnapshot {
-  formId: string;
-  fieldName: string;
-  selectionStart: number | null;
-  selectionEnd: number | null;
-  sessionId: string | null;
-  rawValue: string | null;
-}
-
-interface ScrollSnapshot {
-  selector: string;
-  scrollTop: number;
-  scrollLeft: number;
-}
-
-interface SessionDragState {
-  courseId: string;
-  sessionId: string;
-  durationMinutes: number;
-  offsetY: number;
-  pointerId: number;
-  originDay: DayKey;
-  originStartMinutes: number;
-  previewDay: DayKey;
-  previewStartMinutes: number;
-  previewEndMinutes: number;
-  previewLabel: string;
-  dragColumns: Array<{
-    day: DayKey;
-    element: HTMLElement;
-    rect: DOMRect;
-  }>;
-  gridStartMinutes: number;
-  gridEndMinutes: number;
-}
-
-interface PendingSessionDrag {
-  block: HTMLElement;
-  courseId: string;
-  sessionId: string;
-  day: DayKey;
-  startMinutes: number;
-  endMinutes: number;
-  offsetY: number;
-  pointerId: number;
-  originClientX: number;
-  originClientY: number;
-}
-
-const escapeHtml = (value: string): string =>
-  value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-
-const sanitizeColor = (value: string): string => sanitizeCourseColor(value);
-const prefersReducedMotion = (): boolean => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
-const isReminderLeadMinutes = (value: number): value is LectureReminderLeadMinutes =>
-  LECTURE_REMINDER_LEAD_MINUTES.some((candidate) => candidate === value);
-const formatReminderLeadLabel = (minutes: LectureReminderLeadMinutes): string =>
-  `${formatLectureReminderLeadMinutes(minutes)} 전`;
-const formatReminderLeadList = (leadMinutes: readonly LectureReminderLeadMinutes[]): string =>
-  formatLectureReminderLeadMinutesList([...leadMinutes]);
-const getBannerMeta = (tone: BannerTone): { label: string; icon: string } => {
-  switch (tone) {
-    case 'success':
-      return { label: '완료', icon: 'check' };
-    case 'error':
-      return { label: '주의', icon: 'alert' };
-    case 'info':
-    default:
-      return { label: '안내', icon: 'spark' };
-  }
-};
-
-const isCompositionTextField = (target: EventTarget | null): target is HTMLInputElement | HTMLTextAreaElement => {
-  if (target instanceof HTMLTextAreaElement) {
-    return true;
-  }
-
-  if (!(target instanceof HTMLInputElement)) {
-    return false;
-  }
-
-  return ['text', 'search', 'email', 'url', 'tel', 'password'].includes(target.type);
-};
-
-const SESSION_START_TIME_OPTIONS = getSessionStartTimeOptions();
-const SESSION_END_TIME_OPTIONS = getSessionEndTimeOptions();
-const SESSION_TIME_MERIDIEMS: GenericMeridiem[] = ['AM', 'PM'];
-const SESSION_TIME_MERIDIEM_LABELS: Record<GenericMeridiem, string> = {
-  AM: '오전',
-  PM: '오후',
-};
-const SESSION_TIME_SEGMENT_LABELS: Record<SessionTimeWidgetSegment, string> = {
-  meridiem: '오전/오후',
-  hour: '시',
-  minute: '분',
-};
-const SESSION_TIME_FIELD_NAMES: SessionTimeFieldName[] = ['session-start', 'session-end'];
-
-const isSessionTimeFieldName = (value: string | undefined): value is SessionTimeFieldName =>
-  value ? SESSION_TIME_FIELD_NAMES.includes(value as SessionTimeFieldName) : false;
-
-const getSessionTimeOptions = (fieldName: SessionTimeFieldName, pairedValue?: string): string[] => {
-  if (fieldName === 'session-end' && pairedValue) {
-    return getSessionEndTimeOptionsAfterStart(pairedValue);
-  }
-
-  return fieldName === 'session-start' ? SESSION_START_TIME_OPTIONS : SESSION_END_TIME_OPTIONS;
-};
-
-const getPairedSessionTimeFieldName = (fieldName: SessionTimeFieldName): SessionTimeFieldName =>
-  fieldName === 'session-start' ? 'session-end' : 'session-start';
-
-const formatSessionTimeTriggerLabel = (time: string): string => {
-  const { meridiem, hour, minute } = splitMeridiemTimeParts(time);
-  return `${SESSION_TIME_MERIDIEM_LABELS[meridiem]} ${Number(hour)}:${minute}`;
-};
-
-const getSessionTimeHourOptions = (times: string[], meridiem: GenericMeridiem): string[] =>
-  [...new Set(times.filter((time) => splitMeridiemTimeParts(time).meridiem === meridiem).map((time) => splitMeridiemTimeParts(time).hour))];
-
-const getSessionTimeMinuteOptions = (times: string[], meridiem: GenericMeridiem, hour: string): string[] =>
-  [
-    ...new Set(
-      times
-        .map((time) => splitMeridiemTimeParts(time))
-        .filter((time) => time.meridiem === meridiem && time.hour === hour)
-        .map((time) => time.minute),
-    ),
-  ];
-
-const getCurrentWeekday = (now = new Date()): DayKey | null => {
-  const jsDay = now.getDay();
-  if (jsDay >= 1 && jsDay <= DAY_ORDER.length) {
-    return DAY_ORDER[jsDay - 1];
-  }
-
-  return null;
-};
-
-const resolveDesktopPlatform = (): DesktopPlatform => {
-  const userAgentDataPlatform = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform;
-  const source = [userAgentDataPlatform, navigator.platform, navigator.userAgent].filter(Boolean).join(' ');
-  const normalized = source.toLowerCase();
-
-  if (normalized.includes('mac')) {
-    return 'darwin';
-  }
-
-  if (normalized.includes('win')) {
-    return 'win32';
-  }
-
-  if (normalized.includes('linux')) {
-    return 'linux';
-  }
-
-  return 'linux';
-};
-
-const getSessionBlockLayout = (blockHeight: number, widthPercent: number, titleLength: number): SessionBlockLayout => {
-  const isVeryShort = blockHeight < 52;
-  const isShort = blockHeight < 72;
-  const isVeryNarrow = widthPercent < 40;
-  const isSpacious = blockHeight >= 112 && widthPercent >= 58 && titleLength <= 28;
-
-  if (isVeryShort || (isShort && isVeryNarrow)) {
-    return {
-      density: 'minimal',
-      titleLines: 1,
-      showTime: false,
-      showLocation: false,
-      showConflictChip: false,
-    };
-  }
-
-  return {
-    density: isSpacious ? 'spacious' : 'compact',
-    titleLines: isSpacious ? 2 : 1,
-    showTime: true,
-    showLocation: blockHeight >= 82 && widthPercent >= 58,
-    showConflictChip: isSpacious && blockHeight >= 124 && widthPercent >= 66,
-  };
-};
-
-const renderIcon = (name: string): string => {
-  const paths: Record<string, string> = {
-    spark: '<path d="M12 2l1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8L12 2Z" /><path d="M19.5 16.5l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6Z" />',
-    plus: '<path d="M12 5v14" /><path d="M5 12h14" />',
-    import: '<path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M5 21h14" />',
-    export: '<path d="M12 21V9" /><path d="m7 14 5-5 5 5" /><path d="M5 3h14" />',
-    image: '<rect x="3" y="5" width="18" height="14" rx="2" /><circle cx="9" cy="10" r="1.5" /><path d="m21 16-5.5-5.5L8 18" />',
-    board: '<rect x="4" y="5" width="16" height="14" rx="3" /><path d="M8 9h8" /><path d="M8 13h5" />',
-    clock: '<circle cx="12" cy="12" r="8" /><path d="M12 8v4l3 2" />',
-    alert: '<path d="M12 4 4.5 18h15L12 4Z" /><path d="M12 10v3" /><path d="M12 16h.01" />',
-    trash: '<path d="M4 7h16" /><path d="M9 7V4h6v3" /><path d="M8 10v7" /><path d="M12 10v7" /><path d="M16 10v7" />',
-    copy: '<rect x="9" y="9" width="10" height="10" rx="2" /><path d="M7 15H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v1" />',
-    check: '<path d="m5 13 4 4L19 7" />',
-    edit: '<path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />',
-    reset: '<path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 4v5h5" />',
-    'collapse-right': '<path d="m10 7 5 5-5 5" /><path d="M18 5v14" />',
-    'chevron-down': '<path d="m6 9 6 6 6-6" />',
-    minimize: '<path d="M5 12h14" />',
-    maximize: '<rect x="5" y="5" width="14" height="14" rx="2" />',
-    restore:
-      '<path d="M9 9h10v10H9z" /><path d="M5 5h10v2" /><path d="M5 7v8" /><path d="M7 5h8" />',
-    close: '<path d="M6 6 18 18" /><path d="M18 6 6 18" />',
-  };
-
-  return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] ?? paths.spark}</svg>`;
-};
-
-class SoostaApp {
-  private readonly root: HTMLDivElement;
-  private data: AppData | null = null;
+export class SoostaApp {
+  readonly root: HTMLDivElement;
+  data: AppData | null = null;
   private lastPersistedData: AppData | null = null;
   private selectedCourseId: string | null = null;
   private pendingCourseId: string | null = null;
-  private banner: Banner | null = null;
-  private bannerVisibility: BannerVisibility = 'hidden';
-  private isLoading = true;
+  banner: Banner | null = null;
+  bannerVisibility: BannerVisibility = 'hidden';
+  isLoading = true;
   private isSaving = false;
-  private hasUnsavedChanges = false;
-  private canAutosaveDraft = false;
-  private localRevision = 0;
-  private lastSavedRevision = 0;
-  private saveInFlightRevision: number | null = null;
-  private saveTimer: ReturnType<typeof setTimeout> | null = null;
-  private dragState: SessionDragState | null = null;
-  private pendingSessionDrag: PendingSessionDrag | null = null;
-  private dragMoveFrame: number | null = null;
-  private pendingDragPointer: { clientX: number; clientY: number } | null = null;
-  private currentDragPointer: { clientX: number; clientY: number } | null = null;
-  private viewportWidth = 0;
-  private viewportHeight = 0;
-  private readonly platform: DesktopPlatform = resolveDesktopPlatform();
-  private isWindowMaximized = false;
+  hasUnsavedChanges = false;
+  canAutosaveDraft = false;
+  localRevision = 0;
+  lastSavedRevision = 0;
+  saveInFlightRevision: number | null = null;
+  saveTimer: ReturnType<typeof setTimeout> | null = null;
+  dragState: SessionDragState | null = null;
+  pendingSessionDrag: PendingSessionDrag | null = null;
+  dragMoveFrame: number | null = null;
+  pendingDragPointer: { clientX: number; clientY: number } | null = null;
+  currentDragPointer: { clientX: number; clientY: number } | null = null;
+  viewportWidth = 0;
+  viewportHeight = 0;
+  readonly platform: DesktopPlatform = resolveDesktopPlatform();
+  isWindowMaximized = false;
   private unsubscribeWindowMaximized: Unsubscribe | null = null;
-  private resizeFrame: number | null = null;
+  resizeFrame: number | null = null;
   private inspectorCloseButtonFrame: number | null = null;
-  private bannerAnimationFrame: number | null = null;
-  private bannerAutoDismissTimer: ReturnType<typeof setTimeout> | null = null;
-  private bannerAutoDismissStartedAt: number | null = null;
-  private bannerAutoDismissRemainingMs: number | null = null;
-  private bannerCleanupTimer: ReturnType<typeof setTimeout> | null = null;
-  private isBannerHovered = false;
-  private isBannerFocused = false;
+  bannerAnimationFrame: number | null = null;
+  bannerAutoDismissTimer: ReturnType<typeof setTimeout> | null = null;
+  bannerAutoDismissStartedAt: number | null = null;
+  bannerAutoDismissRemainingMs: number | null = null;
+  bannerCleanupTimer: ReturnType<typeof setTimeout> | null = null;
+  isBannerHovered = false;
+  isBannerFocused = false;
   private composingField: HTMLInputElement | HTMLTextAreaElement | null = null;
   private pendingAutosaveAfterComposition = false;
   private pendingRenderAfterComposition = false;
@@ -414,29 +162,63 @@ class SoostaApp {
   private inspectorVisibility: InspectorVisibility = 'closed';
   private inspectorCloseTimer: ReturnType<typeof setTimeout> | null = null;
   private inspectorOpenFrame: number | null = null;
-  private suppressSessionBlockClick = false;
-  private suppressSessionBlockClickTimer: ReturnType<typeof setTimeout> | null = null;
-  private currentTimeTicker: number | null = null;
-  private currentTimeIndicatorSyncFrame: number | null = null;
+  suppressSessionBlockClick = false;
+  suppressSessionBlockClickTimer: ReturnType<typeof setTimeout> | null = null;
+  currentTimeTicker: number | null = null;
+  currentTimeIndicatorSyncFrame: number | null = null;
   private timetableFitSyncFrame: number | null = null;
   private layoutResizeObserver: ResizeObserver | null = null;
-  private reminderSweepTimer: ReturnType<typeof setInterval> | null = null;
-  private reminderCardTimer: ReturnType<typeof setTimeout> | null = null;
-  private lastReminderSweepAt = Date.now();
-  private activeLectureReminder: ActiveLectureReminder | null = null;
-  private readonly firedLectureReminderIds = new Set<string>();
-  private reminderAudioContext: AudioContext | null = null;
+  reminderSweepTimer: ReturnType<typeof setInterval> | null = null;
+  reminderCardTimer: ReturnType<typeof setTimeout> | null = null;
+  lastReminderSweepAt = Date.now();
+  activeLectureReminder: ActiveLectureReminder | null = null;
+  readonly firedLectureReminderIds = new Set<string>();
+  reminderAudioContext: AudioContext | null = null;
   private readonly scrollableBindings = new WeakSet<HTMLElement>();
   private readonly scrollHideTimers = new WeakMap<HTMLElement, number>();
   private sessionContextMenu: SessionContextMenu | null = null;
   private sessionContextAnchor: HTMLElement | null = null;
-  private sessionTimeWidget: SessionTimeWidgetState | null = null;
-  private pendingSessionTimeFocus: PendingSessionTimeTarget | null = null;
-  private pendingSessionTimeOpen: PendingSessionTimeTarget | null = null;
-  private isCourseColorFieldExpanded = false;
-  private isTimetableFitMode = false;
-  private timetableFitPixelsPerMinute: number | null = null;
-  private isTimetableJpegExporting = false;
+  sessionTimeWidget: SessionTimeWidgetState | null = null;
+  pendingSessionTimeFocus: PendingSessionTimeTarget | null = null;
+  pendingSessionTimeOpen: PendingSessionTimeTarget | null = null;
+  isCourseColorFieldExpanded = false;
+  isTimetableFitMode = false;
+  timetableFitPixelsPerMinute: number | null = null;
+  isTimetableJpegExporting = false;
+
+
+  bindEvents!: () => void;
+  startCurrentTimeTicker!: () => void;
+  stopCurrentTimeTicker!: () => void;
+  syncCurrentTimeUi!: (now?: Date) => void;
+  queueCurrentTimeIndicatorSync!: () => void;
+  cancelQueuedCurrentTimeIndicatorSync!: () => void;
+  syncCurrentTimeIndicator!: (now?: Date) => void;
+  renderBannerToast!: () => void;
+  startReminderSweepLoop!: () => void;
+  stopReminderSweepLoop!: () => void;
+  runReminderSweep!: () => void;
+  areLectureRemindersEnabled!: () => boolean;
+  getLectureReminderLeadMinutes!: () => LectureReminderLeadMinutes[];
+  getLectureReminderSummary!: () => string;
+  triggerManualLectureReminder!: () => Promise<void>;
+  dismissLectureReminder!: () => void;
+  showBanner!: (banner: Banner) => void;
+  dismissBanner!: (immediate?: boolean) => void;
+  renderSessionTimeInput!: (sessionId: string, name: SessionTimeFieldName, value: string, pairedValue?: string) => string;
+  restorePendingSessionTimeTriggerFocus!: () => void;
+  resumePendingSessionTimeWidgetOpen!: () => void;
+  renderOpenSessionTimeWidget!: () => void;
+  syncSessionEndTimeAfterStartChange!: (sessionId: string, startValue: string) => void;
+  closeSessionTimeWidget!: (options: { reason: SessionTimeWidgetCloseReason; outsideTarget?: HTMLElement | null }) => void;
+  handleSessionTimeWidgetClick!: (target: HTMLElement) => boolean;
+  handleAction!: (action: string, element: HTMLElement) => Promise<void>;
+  startSessionDrag!: (event: PointerEvent, block: HTMLElement) => void;
+  handleSessionDragMove!: (event: PointerEvent) => void;
+  finishSessionDrag!: (event: PointerEvent) => Promise<void>;
+  resetSessionDrag!: () => void;
+  consumeSuppressedSessionBlockClick!: (target: HTMLElement) => boolean;
+  syncSessionDragToViewport!: () => void;
 
   public constructor(root: HTMLDivElement) {
     this.root = root;
@@ -495,249 +277,6 @@ class SoostaApp {
     this.layoutResizeObserver.observe(contentSlot);
   }
 
-  private bindEvents(): void {
-    this.root.addEventListener('click', (event) => {
-      const target = event.target as HTMLElement;
-      if (this.consumeSuppressedSessionBlockClick(target)) {
-        return;
-      }
-
-      if (this.banner && !target.closest('.banner')) {
-        this.dismissBanner();
-      }
-
-      if (this.data && this.shouldClearCourseSelectionFromMainPlanClick(target)) {
-        if (!this.confirmDiscardInvalidInspectorDraft()) {
-          return;
-        }
-        this.clearCourseSelection();
-      }
-
-      if (this.handleSessionTimeWidgetClick(target)) {
-        event.preventDefault();
-        return;
-      }
-
-      const actionElement = target.closest<HTMLElement>('[data-action]');
-      if (!actionElement) {
-        return;
-      }
-
-      const action = actionElement.dataset.action;
-      if (!action) {
-        return;
-      }
-
-      void this.handleAction(action, actionElement);
-    });
-
-    const handleFieldMutation = (event: Event) => {
-      const target = event.target as HTMLElement | null;
-      if (!target) {
-        return;
-      }
-
-      const form = target.closest<HTMLFormElement>('form');
-      if (!form) {
-        return;
-      }
-
-      if (form.id === 'course-form') {
-        this.syncCourseColorControls(form, target, event.type === 'change');
-      }
-
-      if (this.shouldDeferFormMutation(event, target)) {
-        return;
-      }
-
-      void this.handleFormMutation(form);
-    };
-
-    this.root.addEventListener('input', handleFieldMutation);
-    this.root.addEventListener('change', handleFieldMutation);
-    this.root.addEventListener('compositionstart', (event) => {
-      if (!isCompositionTextField(event.target)) {
-        return;
-      }
-
-      this.composingField = event.target;
-      if (this.saveTimer !== null) {
-        this.pendingAutosaveAfterComposition = true;
-        this.clearAutosaveTimer();
-      }
-    });
-    this.root.addEventListener('compositionend', (event) => {
-      if (!isCompositionTextField(event.target)) {
-        return;
-      }
-
-      if (this.composingField === event.target) {
-        this.composingField = null;
-      }
-
-      this.resumeDeferredCompositionWork();
-    });
-
-    this.root.addEventListener('submit', (event) => {
-      event.preventDefault();
-      const form = event.target as HTMLFormElement;
-      void this.handleSubmit(form);
-    });
-
-    this.root.addEventListener('pointerdown', (event) => {
-      const target = event.target as HTMLElement;
-      if (this.sessionContextMenu && !target.closest('.session-context-menu')) {
-        this.closeSessionContextMenu();
-      }
-
-      const block = target.closest<HTMLElement>('.session-block');
-      if (!block || block.classList.contains('session-drag-preview')) {
-        return;
-      }
-
-      this.startSessionDrag(event, block);
-    });
-    this.root.addEventListener('contextmenu', (event) => {
-      const target = event.target as HTMLElement;
-      if (target.closest('.session-context-menu')) {
-        event.preventDefault();
-        return;
-      }
-
-      const block = target.closest<HTMLElement>('.session-block');
-      if (!block || block.classList.contains('session-drag-preview')) {
-        if (this.sessionContextMenu && !target.closest('.session-context-menu')) {
-          this.closeSessionContextMenu();
-        }
-
-        return;
-      }
-
-      event.preventDefault();
-      this.openSessionContextMenu(block, event.clientX, event.clientY);
-    });
-    this.root.addEventListener(
-      'scroll',
-      () => {
-        this.closeSessionContextMenu();
-        this.queueInspectorCloseButtonPositionSync();
-      },
-      true,
-    );
-
-    window.addEventListener('pointermove', (event) => {
-      this.handleSessionDragMove(event);
-    });
-    window.addEventListener('pointerup', (event) => {
-      void this.finishSessionDrag(event);
-    });
-    window.addEventListener('pointercancel', () => {
-      this.resetSessionDrag();
-    });
-    window.addEventListener('resize', () => {
-      if (this.resizeFrame !== null) {
-        return;
-      }
-
-      this.resizeFrame = window.requestAnimationFrame(() => {
-        this.resizeFrame = null;
-        this.closeSessionContextMenu();
-        this.closeSessionTimeWidget({ reason: 'resize' });
-        const nextViewportWidth = this.getViewportWidth();
-        const nextViewportHeight = this.getViewportHeight();
-        if (nextViewportWidth === this.viewportWidth && nextViewportHeight === this.viewportHeight) {
-          return;
-        }
-
-        this.viewportWidth = nextViewportWidth;
-        this.viewportHeight = nextViewportHeight;
-        this.renderFrame(true);
-      });
-    });
-    window.addEventListener('focus', () => {
-      this.startCurrentTimeTicker();
-      this.runReminderSweep();
-    });
-    document.addEventListener('visibilitychange', () => {
-      if (!document.hidden) {
-        this.startCurrentTimeTicker();
-        this.runReminderSweep();
-      }
-    });
-    window.addEventListener('keydown', (event) => {
-      if (this.sessionTimeWidget && event.key === 'Escape') {
-        event.preventDefault();
-        this.closeSessionTimeWidget({ reason: 'escape' });
-        return;
-      }
-
-      if (this.sessionTimeWidget && event.key === 'Enter') {
-        const activeField = this.getSessionTimeFieldElement(this.sessionTimeWidget.sessionId, this.sessionTimeWidget.fieldName);
-        const target = event.target;
-        if (
-          activeField &&
-          target instanceof Node &&
-          activeField.contains(target) &&
-          (!(target instanceof HTMLElement) || !target.closest('[data-session-time-option]'))
-        ) {
-          event.preventDefault();
-          this.closeSessionTimeWidget({ reason: 'enter' });
-          return;
-        }
-      }
-
-      if (event.key === 'Escape' && this.sessionContextMenu) {
-        this.closeSessionContextMenu();
-        return;
-      }
-
-      if (this.sessionContextMenu && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
-        const items = [...this.root.querySelectorAll<HTMLElement>('.session-context-item')];
-        if (items.length > 0) {
-          event.preventDefault();
-          const activeIndex = items.findIndex((item) => item === document.activeElement);
-          const nextIndex =
-            event.key === 'ArrowDown'
-              ? (activeIndex + 1 + items.length) % items.length
-              : (activeIndex - 1 + items.length) % items.length;
-          items[nextIndex]?.focus({ preventScroll: true });
-        }
-        return;
-      }
-
-      if (event.key !== 'Escape' || !this.banner) {
-        return;
-      }
-
-      this.dismissBanner();
-    });
-    window.addEventListener('beforeunload', () => {
-      this.unsubscribeWindowMaximized?.();
-      this.unsubscribeWindowMaximized = null;
-      if (this.resizeFrame !== null) {
-        window.cancelAnimationFrame(this.resizeFrame);
-        this.resizeFrame = null;
-      }
-      this.layoutResizeObserver?.disconnect();
-      this.layoutResizeObserver = null;
-      this.cancelQueuedCurrentTimeIndicatorSync();
-      this.cancelQueuedTimetableFitSync();
-      this.clearBannerTimers();
-      this.stopCurrentTimeTicker();
-      this.stopReminderSweepLoop();
-      this.clearReminderCardTimer();
-      this.composingField = null;
-      this.pendingAutosaveAfterComposition = false;
-      this.pendingRenderAfterComposition = false;
-      this.clearSuppressedSessionBlockClick();
-      this.cancelInspectorOpenAnimation();
-      this.cancelInspectorCloseAnimation();
-      this.resetSessionDrag();
-      this.closeSessionContextMenu();
-      this.closeSessionTimeWidget({ reason: 'unload' });
-    });
-  }
-
   private renderShell(): void {
     this.root.className = 'soosta-root';
     this.root.innerHTML = `
@@ -758,16 +297,16 @@ class SoostaApp {
     this.syncShellLayoutState(this.inspectorVisibility);
   }
 
-  private render(): void {
+  render(): void {
     this.renderTopbar();
     this.renderStatus();
     this.renderBannerToast();
 
     if (this.isLoading || !this.data) {
       this.syncShellLayoutState('open');
-      this.query('#sidebar-slot').innerHTML = this.renderLoadingCard('시간표를 준비하고 있어요.');
-      this.query('#content-slot').innerHTML = this.renderLoadingCard('주간 레이아웃을 불러오는 중입니다.');
-      this.query('#inspector-slot').innerHTML = this.renderLoadingCard('에디터를 정리하고 있어요.');
+      this.query('#sidebar-slot').innerHTML = renderLoadingCard('시간표를 준비하고 있어요.');
+      this.query('#content-slot').innerHTML = renderLoadingCard('주간 레이아웃을 불러오는 중입니다.');
+      this.query('#inspector-slot').innerHTML = renderLoadingCard('에디터를 정리하고 있어요.');
       this.syncScrollbars();
       this.syncCurrentTimeIndicator();
       this.queueInspectorCloseButtonPositionSync();
@@ -784,95 +323,13 @@ class SoostaApp {
     this.queueInspectorCloseButtonPositionSync();
   }
 
-  private startCurrentTimeTicker(): void {
-    this.stopCurrentTimeTicker();
-    this.syncCurrentTimeIndicator();
-    this.queueCurrentTimeIndicatorTick();
-  }
-
-  private stopCurrentTimeTicker(): void {
-    if (this.currentTimeTicker !== null) {
-      window.clearTimeout(this.currentTimeTicker);
-      this.currentTimeTicker = null;
-    }
-  }
-
-  private queueCurrentTimeIndicatorSync(): void {
-    if (this.currentTimeIndicatorSyncFrame !== null) {
-      return;
-    }
-
-    this.currentTimeIndicatorSyncFrame = window.requestAnimationFrame(() => {
-      this.currentTimeIndicatorSyncFrame = null;
-      this.syncCurrentTimeIndicator();
-    });
-  }
-
-  private cancelQueuedCurrentTimeIndicatorSync(): void {
-    if (this.currentTimeIndicatorSyncFrame !== null) {
-      window.cancelAnimationFrame(this.currentTimeIndicatorSyncFrame);
-      this.currentTimeIndicatorSyncFrame = null;
-    }
-  }
-
-  private queueCurrentTimeIndicatorTick(now = new Date()): void {
-    const elapsedThisMinuteMs = now.getSeconds() * 1000 + now.getMilliseconds();
-    const delayUntilNextMinute = Math.max(1000, CURRENT_TIME_TICK_MS - elapsedThisMinuteMs + CURRENT_TIME_TICK_BUFFER_MS);
-
-    this.currentTimeTicker = window.setTimeout(() => {
-      this.currentTimeTicker = null;
-      this.syncCurrentTimeIndicator();
-      this.queueCurrentTimeIndicatorTick();
-    }, delayUntilNextMinute);
-  }
-
-  private syncCurrentTimeIndicator(now = new Date()): void {
-    const dayHeads = [...this.root.querySelectorAll<HTMLElement>('[data-day-head]')];
-    const dayColumns = [...this.root.querySelectorAll<HTMLElement>('[data-day-column]')];
-    const indicator = this.root.querySelector<HTMLElement>('[data-current-time-indicator]');
-
-    dayHeads.forEach((head) => head.classList.remove('is-current-time-day'));
-
-    if (indicator) {
-      indicator.hidden = true;
-      indicator.style.removeProperty('top');
-      indicator.style.removeProperty('left');
-      indicator.style.removeProperty('width');
-    }
-
-    if (!this.data) {
-      return;
-    }
-
-    const board = this.getActiveBoard();
-    if (board.courses.length === 0) {
-      return;
-    }
-
-    const range = getGridRange(board);
-    const indicatorState = getCurrentTimeIndicatorState(range, now);
-    if (!indicatorState || !indicator) {
-      return;
-    }
-
-    const dayHead = dayHeads.find((head) => head.dataset.dayHead === indicatorState.day);
-    const dayColumn = dayColumns.find((column) => column.dataset.dayColumn === indicatorState.day);
-    if (!dayColumn) {
-      return;
-    }
-
-    const top = Number((indicatorState.offsetMinutes * this.getTimetablePixelsPerMinute()).toFixed(3));
-    dayHead?.classList.add('is-current-time-day');
-    indicator.hidden = false;
-    indicator.style.top = `${top}px`;
-    indicator.style.left = `${dayColumn.offsetLeft}px`;
-    indicator.style.width = `${dayColumn.offsetWidth}px`;
-  }
-
   private renderTopbar(): void {
     this.syncShellLayoutState();
     const topbarSlot = this.query<HTMLElement>('#topbar-slot');
-    const windowControls = this.renderWindowControls();
+    const windowControls = renderWindowControlsMarkup({
+      platform: this.platform,
+      isWindowMaximized: this.isWindowMaximized,
+    });
 
     topbarSlot.innerHTML = `
       <div class="topbar-title-lane">
@@ -885,77 +342,12 @@ class SoostaApp {
     `;
   }
 
-  private renderStatusActions(): string {
-    const disabled = this.isLoading || !this.data ? 'disabled' : '';
-
-    return `
-      <div class="status-action-group">
-        <button type="button" class="ghost-button status-action-button" data-action="import-data" ${disabled}>
-          ${renderIcon('import')}
-          <span class="button-label">가져오기</span>
-        </button>
-        <button type="button" class="ghost-button status-action-button" data-action="export-data" ${disabled}>
-          ${renderIcon('export')}
-          <span class="button-label">내보내기</span>
-        </button>
-        <button
-          type="button"
-          class="primary-button status-action-button status-action-button-primary"
-          data-action="new-course"
-          ${disabled}
-        >
-          ${renderIcon('plus')}
-          <span class="button-label">새 강의</span>
-        </button>
-      </div>
-    `;
-  }
-
-  private renderWindowControls(): string {
-    const controlRail = getPlatformControlRail(this.platform);
-    const controlOrder =
-      controlRail === 'traffic-lights-left'
-        ? [
-            { action: 'close-window', label: '창 닫기', tone: 'close' },
-            { action: 'minimize-window', label: '최소화', tone: 'minimize' },
-            { action: 'toggle-maximize-window', label: this.isWindowMaximized ? '복원' : '최대화', tone: 'maximize' },
-          ]
-        : [
-            { action: 'minimize-window', label: '최소화', tone: 'minimize' },
-            { action: 'toggle-maximize-window', label: this.isWindowMaximized ? '복원' : '최대화', tone: 'maximize' },
-            { action: 'close-window', label: '창 닫기', tone: 'close' },
-          ];
-
-    return `
-      <div class="topbar-rail topbar-rail-controls">
-        <div class="window-controls window-controls-${controlRail}">
-          ${controlOrder
-            .map(({ action, label, tone }) => {
-              const iconName =
-                tone === 'minimize' ? 'minimize' : tone === 'maximize' ? (this.isWindowMaximized ? 'restore' : 'maximize') : 'close';
-
-              return `
-                <button
-                  type="button"
-                  class="window-control window-control-${tone}"
-                  data-action="${action}"
-                  aria-label="${label}"
-                  title="${label}"
-                >
-                  ${renderIcon(iconName)}
-                  <span class="sr-only">${label}</span>
-                </button>
-              `;
-            })
-            .join('')}
-        </div>
-      </div>
-    `;
-  }
-
   private renderStatus(): void {
     const syncSlot = this.query('#sync-slot');
-    const statusActions = this.renderStatusActions();
+    const statusActions = renderStatusActionsMarkup({
+      isLoading: this.isLoading,
+      hasData: Boolean(this.data),
+    });
     this.renderBannerToast();
 
     const isInvalid = this.hasUnsavedChanges && !this.canAutosaveDraft && !this.isSaving;
@@ -978,471 +370,6 @@ class SoostaApp {
     `;
   }
 
-  private renderBannerToast(): void {
-    const toastSlot = this.root.querySelector<HTMLElement>('#toast-slot');
-    if (!toastSlot) {
-      return;
-    }
-
-    const bannerMeta = this.banner ? getBannerMeta(this.banner.tone) : null;
-
-    toastSlot.innerHTML =
-      this.banner || this.activeLectureReminder
-        ? `
-          <div class="toast-stack">
-            <div class="toast-column">
-              ${this.activeLectureReminder ? this.renderLectureReminderCard(this.activeLectureReminder) : ''}
-              ${
-                this.banner
-                  ? `
-                    <div
-                      class="banner banner-${this.banner.tone} is-${this.bannerVisibility}"
-                      role="${this.banner.tone === 'error' ? 'alert' : 'status'}"
-                      aria-live="${this.banner.tone === 'error' ? 'assertive' : 'polite'}"
-                    >
-                      <div class="banner-icon" aria-hidden="true">${renderIcon(bannerMeta?.icon ?? 'spark')}</div>
-                      <div class="banner-copy">
-                        <strong class="banner-label">${escapeHtml(bannerMeta?.label ?? '안내')}</strong>
-                        <p class="banner-message">${escapeHtml(this.banner.text)}</p>
-                      </div>
-                    </div>
-                  `
-                  : ''
-              }
-            </div>
-          </div>
-        `
-        : '';
-
-    const reminderElement = toastSlot.querySelector<HTMLElement>('.lecture-reminder');
-    if (reminderElement) {
-      reminderElement.addEventListener('mouseenter', () => {
-        this.clearReminderCardTimer();
-      });
-      reminderElement.addEventListener('mouseleave', () => {
-        this.scheduleReminderCardDismiss();
-      });
-      reminderElement.addEventListener('focusin', () => {
-        this.clearReminderCardTimer();
-      });
-      reminderElement.addEventListener('focusout', (event) => {
-        const nextTarget = event.relatedTarget;
-        if (nextTarget instanceof Node && reminderElement.contains(nextTarget)) {
-          return;
-        }
-
-        this.scheduleReminderCardDismiss();
-      });
-    }
-
-    const bannerElement = toastSlot.querySelector<HTMLElement>('.banner');
-    if (!bannerElement) {
-      return;
-    }
-
-    bannerElement.addEventListener('mouseenter', () => {
-      this.isBannerHovered = true;
-      this.pauseBannerAutoDismiss();
-    });
-    bannerElement.addEventListener('mouseleave', () => {
-      this.isBannerHovered = false;
-      this.resumeBannerAutoDismissIfIdle();
-    });
-    bannerElement.addEventListener('focusin', () => {
-      this.isBannerFocused = true;
-      this.pauseBannerAutoDismiss();
-    });
-    bannerElement.addEventListener('focusout', (event) => {
-      const nextTarget = event.relatedTarget;
-      if (nextTarget instanceof Node && bannerElement.contains(nextTarget)) {
-        return;
-      }
-
-      this.isBannerFocused = false;
-      this.resumeBannerAutoDismissIfIdle();
-    });
-  }
-
-  private renderLectureReminderCard(reminder: ActiveLectureReminder): string {
-    const leadLabel = reminder.isTest ? '테스트 알림' : reminder.leadMinutes === 60 ? '1시간 전 알림' : `${reminder.leadMinutes}분 전 알림`;
-
-    return `
-      <section class="lecture-reminder" role="alert" aria-live="assertive">
-        <div class="lecture-reminder-icon" aria-hidden="true">${renderIcon('alert')}</div>
-        <div class="lecture-reminder-copy">
-          <strong class="lecture-reminder-label">${escapeHtml(leadLabel)}</strong>
-          <p class="lecture-reminder-title">${escapeHtml(reminder.courseTitle)}</p>
-          <p class="lecture-reminder-message">${escapeHtml(reminder.body)}</p>
-        </div>
-        <button
-          type="button"
-          class="lecture-reminder-dismiss"
-          data-action="dismiss-lecture-reminder"
-          aria-label="강의 알림 닫기"
-        >
-          ${renderIcon('close')}
-        </button>
-      </section>
-    `;
-  }
-
-  private startReminderSweepLoop(): void {
-    this.stopReminderSweepLoop();
-    this.lastReminderSweepAt = Date.now() - REMINDER_SWEEP_LOOKBACK_MS;
-    this.reminderSweepTimer = setInterval(() => {
-      this.runReminderSweep();
-    }, REMINDER_SWEEP_INTERVAL_MS);
-  }
-
-  private stopReminderSweepLoop(): void {
-    if (this.reminderSweepTimer !== null) {
-      clearInterval(this.reminderSweepTimer);
-      this.reminderSweepTimer = null;
-    }
-  }
-
-  private runReminderSweep(): void {
-    const completedAt = Date.now();
-    const startedAt = getReminderSweepStartMs(this.lastReminderSweepAt, completedAt, REMINDER_SWEEP_LOOKBACK_MS);
-    this.lastReminderSweepAt = completedAt;
-    const reminderLeadMinutes = this.getLectureReminderLeadMinutes();
-
-    if (!this.data || !this.areLectureRemindersEnabled() || reminderLeadMinutes.length === 0) {
-      return;
-    }
-
-    const dueEvents = getDueLectureReminderEvents(
-      this.getActiveBoard(),
-      new Date(startedAt),
-      new Date(completedAt),
-      reminderLeadMinutes,
-    ).filter((event) => !this.firedLectureReminderIds.has(event.reminderId));
-
-    dueEvents.forEach((event) => {
-      this.firedLectureReminderIds.add(event.reminderId);
-      this.presentLectureReminder(event.nativePayload);
-      void window.soosta.showLectureReminder(event.nativePayload).catch((): void => undefined);
-    });
-  }
-
-  private areLectureRemindersEnabled(): boolean {
-    return this.data?.preferences.lectureRemindersEnabled ?? true;
-  }
-
-  private getLectureReminderLeadMinutes(): LectureReminderLeadMinutes[] {
-    return this.data?.preferences.lectureReminderLeadMinutes ?? getDefaultLectureReminderLeadMinutes();
-  }
-
-  private getLectureReminderSummary(): string {
-    const leadMinutes = this.getLectureReminderLeadMinutes();
-    if (leadMinutes.length === 0) {
-      return '선택된 자동 알림 시각이 없어요.';
-    }
-
-    return `${formatReminderLeadList(leadMinutes)}에 알려줍니다.`;
-  }
-
-  private buildManualLectureReminderPayload(): NativeLectureReminderPayload {
-    const nextUpcoming = this.data ? getNextUpcomingSessionOccurrence(this.getActiveBoard(), new Date()) : null;
-    const reminderId = `manual-reminder:${Date.now()}`;
-    const configuredLeadMinutes = this.getLectureReminderLeadMinutes();
-    const configuredLeadText =
-      this.areLectureRemindersEnabled() && configuredLeadMinutes.length > 0
-        ? formatReminderLeadList(configuredLeadMinutes)
-        : this.areLectureRemindersEnabled()
-          ? '선택된 시각 없음'
-          : '현재 꺼짐';
-
-    if (nextUpcoming) {
-      const locationText = nextUpcoming.location ? ` · ${nextUpcoming.location}` : '';
-
-      return {
-        reminderId,
-        leadMinutes: 10,
-        courseTitle: nextUpcoming.title,
-        location: nextUpcoming.location,
-        startsAt: nextUpcoming.startAt,
-        title: `${nextUpcoming.title} · 테스트 알림`,
-        body: `테스트 알림입니다. 실제 자동 알림은 ${DAY_LABELS[nextUpcoming.day].full} ${nextUpcoming.start} 시작 기준 ${configuredLeadText}${locationText}.`,
-        isTest: true,
-      };
-    }
-
-    return {
-      reminderId,
-      leadMinutes: 10,
-      courseTitle: '강의 알림 테스트',
-      location: '현재 보드 기준',
-      startsAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
-      title: '강의 알림 테스트',
-      body: `팝업, 네이티브 알림, 소리가 정상적으로 보이는지 확인해보세요. 현재 자동 알림 설정: ${configuredLeadText}.`,
-      isTest: true,
-    };
-  }
-
-  private async triggerManualLectureReminder(): Promise<void> {
-    const payload = this.buildManualLectureReminderPayload();
-
-    this.presentLectureReminder(payload);
-
-    try {
-      await window.soosta.showLectureReminder(payload);
-      this.showBanner({ tone: 'success', text: '테스트 알림을 보냈어요. 팝업과 소리를 확인해보세요.' });
-    } catch (error) {
-      this.showBanner({ tone: 'error', text: `테스트 알림을 보내지 못했어요. ${this.getErrorMessage(error)}` });
-    }
-  }
-
-  private presentLectureReminder(payload: NativeLectureReminderPayload): void {
-    this.activeLectureReminder = {
-      reminderId: payload.reminderId,
-      leadMinutes: payload.leadMinutes,
-      courseTitle: payload.courseTitle,
-      location: payload.location,
-      startsAt: payload.startsAt,
-      body: payload.body,
-      isTest: payload.isTest,
-    };
-    this.playLectureReminderSound();
-    this.renderBannerToast();
-    this.scheduleReminderCardDismiss();
-  }
-
-  private dismissLectureReminder(): void {
-    if (!this.activeLectureReminder) {
-      return;
-    }
-
-    this.activeLectureReminder = null;
-    this.clearReminderCardTimer();
-    this.renderBannerToast();
-  }
-
-  private scheduleReminderCardDismiss(): void {
-    if (!this.activeLectureReminder) {
-      return;
-    }
-
-    this.clearReminderCardTimer();
-    this.reminderCardTimer = setTimeout(() => {
-      this.reminderCardTimer = null;
-      this.dismissLectureReminder();
-    }, REMINDER_CARD_AUTO_DISMISS_MS);
-  }
-
-  private clearReminderCardTimer(): void {
-    if (this.reminderCardTimer !== null) {
-      clearTimeout(this.reminderCardTimer);
-      this.reminderCardTimer = null;
-    }
-  }
-
-  private playLectureReminderSound(): void {
-    const AudioContextCtor = window.AudioContext;
-    if (!AudioContextCtor) {
-      return;
-    }
-
-    if (!this.reminderAudioContext) {
-      this.reminderAudioContext = new AudioContextCtor();
-    }
-
-    const context = this.reminderAudioContext;
-    const playSequence = (): void => {
-      const baseTime = context.currentTime;
-
-      [0, 0.24, 0.48].forEach((offset, index) => {
-        const oscillator = context.createOscillator();
-        const gain = context.createGain();
-
-        oscillator.type = 'triangle';
-        oscillator.frequency.value = index === 2 ? 1046.5 : 880;
-        gain.gain.setValueAtTime(0.0001, baseTime + offset);
-        gain.gain.exponentialRampToValueAtTime(0.16, baseTime + offset + 0.02);
-        gain.gain.exponentialRampToValueAtTime(0.0001, baseTime + offset + 0.18);
-
-        oscillator.connect(gain);
-        gain.connect(context.destination);
-        oscillator.start(baseTime + offset);
-        oscillator.stop(baseTime + offset + 0.18);
-      });
-    };
-
-    if (context.state === 'suspended') {
-      void context.resume().then(playSequence).catch((): void => undefined);
-      return;
-    }
-
-    playSequence();
-  }
-
-  private showBanner(banner: Banner): void {
-    const isSameBanner =
-      this.banner?.tone === banner.tone &&
-      this.banner?.text === banner.text &&
-      this.bannerVisibility !== 'leaving';
-
-    if (isSameBanner) {
-      this.clearBannerAnimationAndCleanupTimers();
-      this.banner = banner;
-      this.bannerVisibility = 'visible';
-      this.renderBannerToast();
-      this.scheduleBannerAutoDismiss();
-      return;
-    }
-
-    this.clearBannerTimers();
-    this.banner = banner;
-    this.isBannerHovered = false;
-    this.isBannerFocused = false;
-
-    if (prefersReducedMotion()) {
-      this.bannerVisibility = 'visible';
-      this.renderBannerToast();
-      this.scheduleBannerAutoDismiss();
-      return;
-    }
-
-    this.bannerVisibility = 'entering';
-    this.renderBannerToast();
-    this.bannerAnimationFrame = window.requestAnimationFrame(() => {
-      this.bannerAnimationFrame = null;
-      if (!this.banner) {
-        return;
-      }
-
-      this.bannerVisibility = 'visible';
-      this.renderBannerToast();
-      this.scheduleBannerAutoDismiss();
-    });
-  }
-
-  private dismissBanner(immediate = false): void {
-    if (!this.banner) {
-      return;
-    }
-
-    this.clearBannerTimers();
-
-    if (immediate) {
-      this.banner = null;
-      this.bannerVisibility = 'hidden';
-      this.renderBannerToast();
-      return;
-    }
-
-    if (prefersReducedMotion()) {
-      this.banner = null;
-      this.bannerVisibility = 'hidden';
-      this.renderBannerToast();
-      return;
-    }
-
-    this.bannerVisibility = 'leaving';
-    this.renderBannerToast();
-    this.bannerCleanupTimer = setTimeout(() => {
-      this.bannerCleanupTimer = null;
-      this.banner = null;
-      this.bannerVisibility = 'hidden';
-      this.renderBannerToast();
-    }, BANNER_EXIT_DURATION_MS);
-  }
-
-  private clearBannerTimers(): void {
-    this.clearBannerAnimationAndCleanupTimers();
-    this.clearBannerAutoDismissTimer();
-
-    this.isBannerHovered = false;
-    this.isBannerFocused = false;
-  }
-
-  private scheduleBannerAutoDismiss(): void {
-    if (!this.banner) {
-      return;
-    }
-
-    const timeoutMs = BANNER_AUTO_DISMISS_MS[this.banner.tone];
-    if (timeoutMs <= 0) {
-      return;
-    }
-
-    this.clearBannerAutoDismissTimer(false);
-    this.bannerAutoDismissRemainingMs = timeoutMs;
-    this.bannerAutoDismissStartedAt = null;
-
-    if (this.isBannerHovered || this.isBannerFocused) {
-      return;
-    }
-
-    this.startBannerAutoDismissTimer(timeoutMs);
-  }
-
-  private startBannerAutoDismissTimer(timeoutMs: number): void {
-    this.clearBannerAutoDismissTimer(false);
-    this.bannerAutoDismissRemainingMs = timeoutMs;
-    this.bannerAutoDismissStartedAt = Date.now();
-    this.bannerAutoDismissTimer = setTimeout(() => {
-      this.clearBannerAutoDismissTimer();
-      this.dismissBanner();
-    }, timeoutMs);
-  }
-
-  private clearBannerAutoDismissTimer(resetState = true): void {
-    if (this.bannerAutoDismissTimer !== null) {
-      clearTimeout(this.bannerAutoDismissTimer);
-      this.bannerAutoDismissTimer = null;
-    }
-
-    if (resetState) {
-      this.bannerAutoDismissStartedAt = null;
-      this.bannerAutoDismissRemainingMs = null;
-    }
-  }
-
-  private clearBannerAnimationAndCleanupTimers(): void {
-    if (this.bannerAnimationFrame !== null) {
-      window.cancelAnimationFrame(this.bannerAnimationFrame);
-      this.bannerAnimationFrame = null;
-    }
-
-    if (this.bannerCleanupTimer !== null) {
-      clearTimeout(this.bannerCleanupTimer);
-      this.bannerCleanupTimer = null;
-    }
-  }
-
-  private pauseBannerAutoDismiss(): void {
-    if (
-      this.bannerAutoDismissTimer === null ||
-      this.bannerAutoDismissStartedAt === null ||
-      this.bannerAutoDismissRemainingMs === null
-    ) {
-      return;
-    }
-
-    const elapsed = Date.now() - this.bannerAutoDismissStartedAt;
-    this.bannerAutoDismissRemainingMs = Math.max(0, this.bannerAutoDismissRemainingMs - elapsed);
-    this.clearBannerAutoDismissTimer(false);
-    this.bannerAutoDismissStartedAt = null;
-  }
-
-  private resumeBannerAutoDismissIfIdle(): void {
-    if (this.isBannerHovered || this.isBannerFocused || !this.banner) {
-      return;
-    }
-
-    if (this.bannerAutoDismissRemainingMs === null) {
-      return;
-    }
-
-    if (this.bannerAutoDismissRemainingMs <= 0) {
-      this.dismissBanner();
-      return;
-    }
-
-    this.startBannerAutoDismissTimer(this.bannerAutoDismissRemainingMs);
-  }
-
   private renderSidebar(): string {
     const data = this.data;
     if (!data) {
@@ -1451,144 +378,17 @@ class SoostaApp {
 
     const board = this.getActiveBoard();
     const agenda = getTodayAgenda(board);
-    const remindersEnabled = this.areLectureRemindersEnabled();
     const reminderLeadMinutes = this.getLectureReminderLeadMinutes();
-    const reminderSummary = this.getLectureReminderSummary();
-    const agendaDay = agenda.length > 0 ? agenda[0].day : getCurrentWeekday() ?? null;
-
-    return `
-      <section class="panel-card board-panel">
-        <div class="panel-heading">
-          <div>
-            <h2>학기 보드</h2>
-          </div>
-          <button type="button" class="soft-button" data-action="new-board">${renderIcon('plus')}새 시간표</button>
-        </div>
-        <div class="board-switcher">
-          ${data.boards
-            .map(
-              (item) => `
-                <button
-                  type="button"
-                  class="board-chip ${item.id === board.id ? 'is-active' : ''}"
-                  data-action="select-board"
-                  data-board-id="${escapeHtml(item.id)}"
-                >
-                  <span class="board-chip-title">${escapeHtml(item.name)}</span>
-                  <span class="board-chip-meta">${escapeHtml(item.semester)}</span>
-                </button>
-              `,
-            )
-            .join('')}
-        </div>
-        <form id="board-form" class="stack-form">
-          <label>
-            <span>보드 이름</span>
-            <input name="board-name" value="${escapeHtml(board.name)}" maxlength="40" placeholder="예: 메인 플랜" />
-          </label>
-          <label>
-            <span>학기</span>
-            <input name="board-semester" value="${escapeHtml(board.semester)}" maxlength="40" placeholder="예: 2026 봄학기" />
-          </label>
-          <label>
-            <span>메모</span>
-            <textarea name="board-note" rows="3" placeholder="이 시간표의 기준이나 참고 메모를 적어보세요.">${escapeHtml(board.note)}</textarea>
-          </label>
-          <div class="form-note-row split-row">
-            <button type="button" class="ghost-button" data-action="duplicate-board">${renderIcon('copy')}복제</button>
-            <button type="button" class="ghost-button danger-button" data-action="delete-board">${renderIcon('trash')}삭제</button>
-          </div>
-        </form>
-      </section>
-
-      <section class="panel-card agenda-panel">
-        <div class="panel-heading compact">
-          <div>
-            <h2>오늘 일정</h2>
-          </div>
-          <span class="panel-hint">${agendaDay ? escapeHtml(DAY_LABELS[agendaDay].full) : '일요일'}</span>
-        </div>
-        ${agenda.length > 0 ? `<div class="agenda-list">${agenda.map((item) => this.renderAgendaItem(item)).join('')}</div>` : `<div class="empty-copy">오늘 등록된 강의가 없어요. 여백이 넓은 날이네요.</div>`}
-      </section>
-
-      <section class="panel-card insight-panel">
-        <div class="panel-heading compact">
-          <div>
-            <h2>강의 알림</h2>
-          </div>
-        </div>
-        <p class="empty-copy compact-copy">
-          ${
-            remindersEnabled
-              ? reminderLeadMinutes.length > 0
-                ? `자동 알림이 켜져 있어요. ${reminderSummary}`
-                : '자동 알림은 켜져 있지만 선택된 시각이 없어요. 아래에서 분 단위로 직접 입력하거나 기본 버튼으로 추가해 주세요.'
-              : `자동 알림이 꺼져 있어요. 켜면 선택한 시각(${reminderLeadMinutes.length > 0 ? formatReminderLeadList(reminderLeadMinutes) : '없음'})에 다시 알려줍니다.`
-          }
-        </p>
-        <div class="reminder-settings-panel">
-          <div class="reminder-settings-group reminder-settings-actions-grid">
-            <button
-              type="button"
-              class="${remindersEnabled ? 'soft-button' : 'ghost-button'} reminder-settings-button"
-              data-action="toggle-lecture-reminders"
-            >
-              ${renderIcon(remindersEnabled ? 'check' : 'alert')}
-              ${remindersEnabled ? '알림 끄기' : '알림 켜기'}
-            </button>
-            <button
-              type="button"
-              class="ghost-button reminder-settings-button"
-              data-action="test-lecture-reminder"
-            >
-              ${renderIcon('spark')}
-              테스트 알림
-            </button>
-          </div>
-          <div class="reminder-settings-group reminder-settings-presets-grid">
-            ${LECTURE_REMINDER_LEAD_MINUTES.map(
-              (minutes) => `
-                <button
-                  type="button"
-                  class="${reminderLeadMinutes.includes(minutes) ? 'soft-button' : 'ghost-button'} reminder-settings-button"
-                  data-action="toggle-lecture-reminder-lead"
-                  data-lead-minutes="${minutes}"
-                >
-                  ${renderIcon(reminderLeadMinutes.includes(minutes) ? 'check' : 'clock')}
-                  ${formatReminderLeadLabel(minutes)}
-                </button>
-              `,
-            ).join('')}
-          </div>
-          <form id="reminder-settings-form" class="stack-form reminder-settings-form reminder-settings-group">
-            <label>
-              <span>직접 입력 (분)</span>
-              <input
-                name="lecture-reminder-lead-minutes"
-                value="${escapeHtml(reminderLeadMinutes.join(', '))}"
-                inputmode="numeric"
-                placeholder="예: 90, 45, 10"
-              />
-            </label>
-            <p class="empty-copy compact-copy">쉼표나 공백으로 여러 시각을 입력할 수 있어요. 예: 120 45 10</p>
-            <div class="reminder-settings-actions-grid reminder-settings-form-actions">
-              <button type="submit" class="soft-button reminder-settings-button">
-                ${renderIcon('check')}
-                시각 저장
-              </button>
-              <button
-                type="button"
-                class="ghost-button reminder-settings-button"
-                data-action="reset-lecture-reminder-times"
-              >
-                ${renderIcon('clock')}
-                기본값 복원
-              </button>
-            </div>
-          </form>
-        </div>
-      </section>
-    `;
+    return renderSidebarSection({
+      data,
+      board,
+      agenda,
+      agendaDay: agenda.length > 0 ? agenda[0].day : getCurrentWeekday() ?? null,
+      remindersEnabled: this.areLectureRemindersEnabled(),
+      reminderLeadMinutes,
+      reminderSummary: this.getLectureReminderSummary(),
+      renderAgendaItem: (item) => this.renderAgendaItem(item),
+    });
   }
 
   private renderContent(): string {
@@ -1604,56 +404,19 @@ class SoostaApp {
       hours.push(minutes);
     }
 
-    return `
-      <section class="panel-card hero-panel">
-        <div class="panel-heading hero-heading">
-          <div>
-            <div class="hero-title-row">
-              <h2>${escapeHtml(board.name)}</h2>
-              <span class="hero-title-meta">${escapeHtml(board.semester)}</span>
-            </div>
-            ${board.note ? `<p class="hero-copy">${escapeHtml(board.note)}</p>` : ''}
-          </div>
-          <div class="hero-actions">
-            <div class="hero-badges">
-              <span class="hero-badge">${board.courses.length} courses</span>
-              <span class="hero-badge secondary">${stats.totalCredits}학점</span>
-              <span class="hero-badge secondary">${minutesToTime(range.startMinutes)}–${minutesToTime(range.endMinutes)}</span>
-            </div>
-            ${
-              hasCourses
-                ? `
-                  <div class="hero-action-buttons">
-                    <button
-                      type="button"
-                      class="ghost-button timetable-export-button"
-                      data-action="export-timetable-jpg"
-                      ${this.isTimetableJpegExporting ? 'disabled' : ''}
-                    >
-                      ${renderIcon('image')}
-                      ${this.isTimetableJpegExporting ? 'JPG 저장 중…' : 'JPG 다운로드'}
-                    </button>
-                    <button
-                      type="button"
-                      class="${this.isTimetableFitMode ? 'soft-button' : 'ghost-button'} timetable-fit-button"
-                      data-action="toggle-timetable-fit"
-                      aria-pressed="${this.isTimetableFitMode ? 'true' : 'false'}"
-                    >
-                      ${renderIcon(this.isTimetableFitMode ? 'restore' : 'maximize')}
-                      ${this.isTimetableFitMode ? '원래 높이' : '한 화면 맞춤'}
-                    </button>
-                  </div>
-                `
-                : ''
-            }
-          </div>
-        </div>
-        ${hasCourses ? this.renderTimetable(positioned, height, hours, range.startMinutes, pixelsPerMinute) : this.renderEmptyBoard()}
-      </section>
-    `;
+    return renderContentSection({
+      board,
+      stats,
+      range,
+      bodyMarkup: hasCourses
+        ? this.renderTimetable(positioned, height, hours, range.startMinutes, pixelsPerMinute)
+        : this.renderEmptyBoard(),
+      isTimetableFitMode: this.isTimetableFitMode,
+      isTimetableJpegExporting: this.isTimetableJpegExporting,
+    });
   }
 
-  private getMinimumSessionBlockHeight(): number {
+  getMinimumSessionBlockHeight(): number {
     return this.isTimetableFitMode ? FITTED_TIMETABLE_BLOCK_MIN_HEIGHT : DEFAULT_TIMETABLE_BLOCK_MIN_HEIGHT;
   }
 
@@ -1818,717 +581,30 @@ class SoostaApp {
   }
 
   private renderInspectorPanel(course: Course, isEditing: boolean, visualState: InspectorVisibility): string {
-    const weeklyMinutes = course.sessions.reduce(
-      (sum, session) => sum + (timeToMinutes(session.end) - timeToMinutes(session.start)),
-      0,
-    );
-    const isClosing = visualState === 'closing';
-    const panelClassNames = ['panel-card', 'inspector-panel'];
-    if (visualState === 'opening') {
-      panelClassNames.push('is-opening');
-    }
-    if (isClosing) {
-      panelClassNames.push('is-closing');
-    }
-
-    return `
-      <section class="${panelClassNames.join(' ')}" data-visual-state="${visualState}" ${isClosing ? 'aria-hidden="true"' : ''}>
-        <div class="panel-heading">
-          <div>
-            <h2>${isEditing ? escapeHtml(course.title || '강의 수정') : '새 강의 만들기'}</h2>
-            <p class="hero-copy">${isEditing ? '선택된 강의를 다듬고 즉시 반영하세요.' : '한 과목씩 더 묵직하게 쌓아 올리는 방식으로 설계했어요.'}</p>
-          </div>
-          <div class="inspector-meta">
-            <span>${course.sessions.length}회</span>
-            <span>${escapeHtml(formatDuration(weeklyMinutes))}</span>
-          </div>
-        </div>
-        <form id="course-form" class="stack-form" data-mode="${isEditing ? 'edit' : 'create'}">
-          <input type="hidden" name="course-id" value="${escapeHtml(course.id)}" />
-          <input type="hidden" name="location" value="${escapeHtml(course.location)}" />
-          <label>
-            <span>강의명</span>
-            <input name="title" value="${escapeHtml(course.title)}" maxlength="60" placeholder="예: 인터랙션디자인" required />
-          </label>
-          <div class="split-fields">
-            <label>
-              <span>과목 코드</span>
-              <input name="code" value="${escapeHtml(course.code)}" maxlength="24" placeholder="예: DES304" />
-            </label>
-            <label>
-              <span>학점</span>
-              <input name="credits" type="number" min="0" max="9" step="1" value="${course.credits ?? ''}" placeholder="3" />
-            </label>
-          </div>
-          <div class="split-fields">
-            <label>
-              <span>교수명</span>
-              <input name="instructor" value="${escapeHtml(course.instructor)}" maxlength="32" placeholder="예: 정민서" />
-            </label>
-          </div>
-          ${this.renderCourseColorField(course)}
-          <label>
-            <span>메모</span>
-            <textarea name="memo" rows="3" placeholder="과제, 발표, 수업 분위기 같은 메모를 남겨보세요.">${escapeHtml(course.memo)}</textarea>
-          </label>
-          <div class="session-editor-head">
-            <div>
-              <h3>주간 수업 시간</h3>
-              <p>한 과목이 여러 요일에 열리면 수업 시간을 추가해 주세요.</p>
-            </div>
-            <button type="button" class="soft-button" data-action="add-session">${renderIcon('plus')}수업 시간 추가</button>
-          </div>
-          <div id="session-list" class="session-list">
-            ${course.sessions.map((session, index) => this.renderSessionRow(session, index)).join('')}
-          </div>
-          <div class="form-note-row stack-actions">
-            <button type="button" class="ghost-button" data-action="new-course">${renderIcon('reset')}초기화</button>
-            ${isEditing ? `<button type="button" class="ghost-button danger-button" data-action="delete-course" data-course-id="${escapeHtml(course.id)}">${renderIcon('trash')}이 강의 삭제</button>` : ''}
-          </div>
-        </form>
-        <button
-          type="button"
-          class="inspector-close-button"
-          data-action="close-inspector"
-          aria-label="${isEditing ? '강의 에디터 닫기' : '새 강의 폼 닫기'}"
-          title="${isEditing ? '에디터 닫기' : '폼 닫기'}"
-        >
-          ${renderIcon('collapse-right')}
-        </button>
-      </section>
-    `;
+    return renderInspectorPanelSection({
+      course,
+      isEditing,
+      visualState,
+      colorFieldMarkup: this.renderCourseColorField(course),
+      sessionRowsMarkup: course.sessions.map((session, index) => this.renderSessionRow(session, index)).join(''),
+    });
   }
 
   private renderCourseColorField(course: Course): string {
-    const board = this.getActiveBoard();
-    const currentColor = sanitizeColor(course.color);
-    const rgb = hexColorToRgb(currentColor);
-    const otherCourseCount = board.courses.filter((item) => item.id !== course.id).length;
-    const recommendationHint =
-      otherCourseCount > 0
-        ? '기존 강의 컬러를 먼저 보여드리고, 이어서 다른 팔레트를 추천해요.'
-        : '아직 강의가 없어서 기본 팔레트를 먼저 추천해요.';
-    const recommendations = getCourseColorRecommendations(board.courses, {
-      currentCourseId: course.id,
-      selectedColor: currentColor,
-      limit: 6,
+    return renderCourseColorFieldSection({
+      courses: this.getActiveBoard().courses,
+      course,
+      isExpanded: this.isCourseColorFieldExpanded,
     });
-
-    return `
-      <div class="form-field">
-        <span>포인트 컬러</span>
-        <div class="color-field-shell">
-          <button
-            type="button"
-            class="color-field-toggle"
-            data-action="toggle-color-field"
-            aria-expanded="${this.isCourseColorFieldExpanded ? 'true' : 'false'}"
-            aria-controls="course-color-panel"
-            aria-label="${this.isCourseColorFieldExpanded ? '추천 색상과 RGB 미세 조정 접기' : '추천 색상과 RGB 미세 조정 펼치기'}"
-          >
-            <span class="color-field-toggle-summary">
-              <span
-                class="color-preview-swatch color-field-toggle-chip"
-                data-color-preview-swatch
-                style="--swatch:${escapeHtml(currentColor)}"
-                aria-hidden="true"
-              ></span>
-              <span class="color-field-toggle-copy">
-                <span class="color-field-toggle-kicker">추천 색상 · RGB 미세 조정</span>
-                <strong data-color-preview-hex>${escapeHtml(currentColor.toUpperCase())}</strong>
-                <span data-color-preview-rgb>R ${rgb.red} · G ${rgb.green} · B ${rgb.blue}</span>
-              </span>
-            </span>
-            <span class="color-field-toggle-label">${this.isCourseColorFieldExpanded ? '접기' : '펼치기'}</span>
-            <span class="color-field-toggle-icon" aria-hidden="true">${renderIcon('chevron-down')}</span>
-          </button>
-          <div class="color-field" id="course-color-panel" ${this.isCourseColorFieldExpanded ? '' : 'hidden'}>
-            <div class="color-field-section">
-              <div class="color-field-heading">
-                <strong>추천 색상</strong>
-                <span>${recommendationHint}</span>
-              </div>
-              <div class="color-swatch-grid">
-                ${recommendations
-                  .map((color) => {
-                    const isActive = sanitizeColor(color) === currentColor;
-                    return `
-                      <button
-                        type="button"
-                        class="color-swatch-button ${isActive ? 'is-active' : ''}"
-                        data-action="recommend-color"
-                        data-color="${escapeHtml(color)}"
-                        data-color-option
-                        aria-pressed="${isActive ? 'true' : 'false'}"
-                      >
-                        <span class="color-swatch-button-chip" style="--swatch:${escapeHtml(color)}" aria-hidden="true"></span>
-                        <span>${escapeHtml(color.toUpperCase())}</span>
-                      </button>
-                    `;
-                  })
-                  .join('')}
-              </div>
-            </div>
-            <div class="color-field-section">
-              <div class="color-field-heading">
-                <strong>RGB 미세 조정</strong>
-                <span>추천한 색을 시작점으로 잡고 수치를 직접 다듬을 수 있어요.</span>
-              </div>
-              <div class="color-picker-row">
-                <input name="color" type="color" value="${currentColor}" aria-label="강의 포인트 컬러" />
-                <div class="color-preview-card">
-                  <span
-                    class="color-preview-swatch"
-                    data-color-preview-swatch
-                    style="--swatch:${escapeHtml(currentColor)}"
-                    aria-hidden="true"
-                  ></span>
-                  <div class="color-preview-copy">
-                    <strong data-color-preview-hex>${escapeHtml(currentColor.toUpperCase())}</strong>
-                    <span data-color-preview-rgb>R ${rgb.red} · G ${rgb.green} · B ${rgb.blue}</span>
-                  </div>
-                </div>
-              </div>
-              <div class="color-rgb-grid">
-                ${this.renderColorChannelField('R', 'red', rgb.red)}
-                ${this.renderColorChannelField('G', 'green', rgb.green)}
-                ${this.renderColorChannelField('B', 'blue', rgb.blue)}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    `;
-  }
-
-  private renderColorChannelField(label: 'R' | 'G' | 'B', channel: CourseColorChannel, value: number): string {
-    return `
-      <div class="color-channel-field">
-        <span>${label}</span>
-        <input
-          type="number"
-          min="0"
-          max="255"
-          step="1"
-          inputmode="numeric"
-          value="${value}"
-          data-color-control="rgb"
-          data-color-channel="${channel}"
-          aria-label="${label} 값"
-        />
-      </div>
-    `;
   }
 
   private renderSessionRow(session: CourseSession, index: number): string {
-    const resolvedStartValue = coerceTimeToOptions(session.start, SESSION_START_TIME_OPTIONS);
-    const resolvedEndValue = coerceTimeToOptions(session.end, getSessionEndTimeOptionsAfterStart(resolvedStartValue));
-
-    return `
-      <div class="session-row" data-session-id="${escapeHtml(session.id)}">
-        <div class="session-row-header">
-          <strong>수업 시간 ${index + 1}</strong>
-          <button type="button" class="icon-button danger-inline" data-action="remove-session" aria-label="수업 시간 삭제">×</button>
-        </div>
-        <div class="session-grid">
-          <label>
-            <span>요일</span>
-            <select name="session-day">
-              ${DAY_ORDER.map(
-                (day) => `<option value="${day}" ${day === session.day ? 'selected' : ''}>${escapeHtml(DAY_LABELS[day].full)}</option>`,
-              ).join('')}
-            </select>
-          </label>
-          <label>
-            <span>장소</span>
-            <input name="session-location" value="${escapeHtml(session.location)}" maxlength="32" placeholder="세션별 장소" />
-          </label>
-          <div class="form-field">
-            <span>시작</span>
-            ${this.renderSessionTimeInput(session.id, 'session-start', resolvedStartValue, resolvedEndValue)}
-          </div>
-          <div class="form-field">
-            <span>종료</span>
-            ${this.renderSessionTimeInput(session.id, 'session-end', resolvedEndValue, resolvedStartValue)}
-          </div>
-        </div>
-      </div>
-    `;
-  }
-
-  private renderSessionTimeInput(sessionId: string, name: SessionTimeFieldName, value: string, pairedValue?: string): string {
-    const timeOptions = getSessionTimeOptions(name, pairedValue);
-    const resolvedValue = timeOptions.includes(value) ? value : coerceTimeToOptions(value, timeOptions);
-    const label = name === 'session-start' ? '시작 시간' : '종료 시간';
-    const triggerValue = formatSessionTimeTriggerLabel(resolvedValue);
-
-    return `
-      <div
-        class="session-time-field"
-        data-session-id="${escapeHtml(sessionId)}"
-        data-session-time-field="${name}"
-        data-session-time-label="${label}"
-        data-open="false"
-      >
-        <input
-          type="hidden"
-          name="${name}"
-          class="session-time-hidden-input"
-          value="${escapeHtml(resolvedValue)}"
-          required
-        />
-        <button
-          type="button"
-          class="session-time-trigger"
-          data-session-time-trigger
-          data-session-id="${escapeHtml(sessionId)}"
-          data-session-time-field="${name}"
-          data-open="false"
-          aria-haspopup="dialog"
-          aria-expanded="false"
-          aria-label="${escapeHtml(`${label} ${triggerValue}`)}"
-        >
-          <span class="session-time-trigger-label">
-            <span class="session-time-trigger-value">${escapeHtml(triggerValue)}</span>
-            <span class="session-time-trigger-meta">${escapeHtml(label)} 선택</span>
-          </span>
-          <span class="session-time-trigger-icon" aria-hidden="true">${renderIcon('clock')}</span>
-        </button>
-        <div class="session-time-popover-slot"></div>
-      </div>
-    `;
-  }
-
-  private renderSessionTimeOptionButtons(
-    segment: SessionTimeWidgetSegment,
-    values: string[],
-    selectedValue: string,
-    formatter: (value: string) => string,
-  ): string {
-    return values
-      .map(
-        (value) => `
-          <button
-            type="button"
-            class="session-time-option"
-            data-role="option"
-            data-session-time-option="${segment}"
-            data-session-time-value="${escapeHtml(value)}"
-            data-selected="${value === selectedValue ? 'true' : 'false'}"
-            aria-pressed="${value === selectedValue ? 'true' : 'false'}"
-          >
-            ${escapeHtml(formatter(value))}
-          </button>
-        `,
-      )
-      .join('');
-  }
-
-  private renderSessionTimeMeridiemButtons(selectedValue: GenericMeridiem, values: GenericMeridiem[]): string {
-    return `
-      <div class="session-time-meridiem">
-        <span class="session-time-group-label">${SESSION_TIME_SEGMENT_LABELS.meridiem}</span>
-        <div class="session-time-meridiem-options" role="group" aria-label="${escapeHtml(SESSION_TIME_SEGMENT_LABELS.meridiem)}">
-          ${this.renderSessionTimeOptionButtons('meridiem', values, selectedValue, (value) => SESSION_TIME_MERIDIEM_LABELS[value as GenericMeridiem])}
-        </div>
-      </div>
-    `;
-  }
-
-  private renderSessionTimePopoverMarkup(
-    fieldName: SessionTimeFieldName,
-    draftValue: string,
-    openSegment: SessionTimeMenuSegment | null,
-    pairedValue?: string,
-  ): string {
-    const timeOptions = getSessionTimeOptions(fieldName, pairedValue);
-    const { meridiem, hour, minute } = splitMeridiemTimeParts(draftValue);
-    const meridiemOptions = SESSION_TIME_MERIDIEMS.filter((value) => getSessionTimeHourOptions(timeOptions, value).length > 0);
-    const hourOptions = getSessionTimeHourOptions(timeOptions, meridiem);
-    const minuteOptions = getSessionTimeMinuteOptions(timeOptions, meridiem, hour);
-    const activeSegment = resolveSessionTimeMenuSegment(openSegment);
-    const label = fieldName === 'session-start' ? '시작 시간' : '종료 시간';
-    const selectionSummary = `${SESSION_TIME_MERIDIEM_LABELS[meridiem]} ${Number(hour)}시 ${minute}분`;
-    const optionSet =
-      activeSegment === 'hour'
-        ? {
-            values: hourOptions,
-            selectedValue: hour,
-            formatter: (value: string) => `${Number(value)}시`,
-          }
-        : {
-            values: minuteOptions,
-            selectedValue: minute,
-            formatter: (value: string) => `${value}분`,
-          };
-
-    return `
-      <div
-        class="session-time-popover is-open"
-        data-open="true"
-        role="dialog"
-        aria-label="${escapeHtml(label)} 선택"
-      >
-        ${this.renderSessionTimeMeridiemButtons(meridiem, meridiemOptions)}
-        <div class="session-time-select-menu" data-session-time-menu="${activeSegment}">
-          <div class="session-time-select-menu-head">
-            <div class="session-time-select-menu-heading">
-              <span class="session-time-select-menu-title">${SESSION_TIME_SEGMENT_LABELS[activeSegment]}</span>
-              <span class="session-time-select-menu-summary">${escapeHtml(selectionSummary)}</span>
-            </div>
-            <span class="session-time-select-menu-hint">${
-              activeSegment === 'minute' ? '바깥 클릭 또는 Enter로 적용' : '선택 후 다음 단계로 이동'
-            }</span>
-          </div>
-          <div class="session-time-select-options" data-segment="${activeSegment}" role="listbox" aria-label="${escapeHtml(SESSION_TIME_SEGMENT_LABELS[activeSegment])}">
-            ${this.renderSessionTimeOptionButtons(activeSegment, optionSet.values, optionSet.selectedValue, optionSet.formatter)}
-          </div>
-        </div>
-      </div>
-    `;
-  }
-
-  private getSessionTimeFieldElement(sessionId: string, fieldName: SessionTimeFieldName): HTMLElement | null {
-    return this.root.querySelector<HTMLElement>(
-      `.session-time-field[data-session-id="${sessionId}"][data-session-time-field="${fieldName}"]`,
-    );
-  }
-
-  private getSessionTimeFieldValue(sessionId: string, fieldName: SessionTimeFieldName): string | null {
-    return (
-      this.getSessionTimeFieldElement(sessionId, fieldName)?.querySelector<HTMLInputElement>('.session-time-hidden-input')?.value ??
-      null
-    );
-  }
-
-  private getSessionTimeOptionsForField(sessionId: string, fieldName: SessionTimeFieldName): string[] {
-    return getSessionTimeOptions(
-      fieldName,
-      this.getSessionTimeFieldValue(sessionId, getPairedSessionTimeFieldName(fieldName)) ?? undefined,
-    );
-  }
-
-  private getSessionTimeTargetFromElement(element: HTMLElement | null): PendingSessionTimeTarget | null {
-    const field = element?.closest<HTMLElement>('.session-time-field');
-    const sessionId = field?.dataset.sessionId;
-    const fieldName = field?.dataset.sessionTimeField;
-    if (!sessionId || !isSessionTimeFieldName(fieldName)) {
-      return null;
-    }
-
-    return {
-      sessionId,
-      fieldName,
-    };
-  }
-
-  private setSessionTimeFieldOpenState(field: HTMLElement, isOpen: boolean): void {
-    field.dataset.open = isOpen ? 'true' : 'false';
-    const row = field.closest<HTMLElement>('.session-row');
-    if (row) {
-      row.dataset.sessionTimeOpen = isOpen ? 'true' : 'false';
-    }
-    const trigger = field.querySelector<HTMLButtonElement>('[data-session-time-trigger]');
-    if (trigger) {
-      trigger.dataset.open = isOpen ? 'true' : 'false';
-      trigger.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
-    }
-  }
-
-  private updateSessionTimeTriggerLabel(field: HTMLElement | null, value: string): void {
-    if (!field) {
-      return;
-    }
-
-    const trigger = field.querySelector<HTMLButtonElement>('[data-session-time-trigger]');
-    const triggerValue = field.querySelector<HTMLElement>('.session-time-trigger-value');
-    const label = field.dataset.sessionTimeLabel ?? '시간';
-    const formattedValue = formatSessionTimeTriggerLabel(value);
-
-    if (triggerValue) {
-      triggerValue.textContent = formattedValue;
-    }
-
-    if (trigger) {
-      trigger.setAttribute('aria-label', `${label} ${formattedValue}`);
-    }
-  }
-
-  private restorePendingSessionTimeTriggerFocus(): void {
-    if (!this.pendingSessionTimeFocus) {
-      return;
-    }
-
-    const pending = this.pendingSessionTimeFocus;
-    const trigger = this.getSessionTimeFieldElement(pending.sessionId, pending.fieldName)?.querySelector<HTMLButtonElement>(
-      '[data-session-time-trigger]',
-    );
-    if (!trigger) {
-      return;
-    }
-
-    this.pendingSessionTimeFocus = null;
-    trigger.focus({ preventScroll: true });
-  }
-
-  private queueSessionTimeTriggerFocus(target: PendingSessionTimeTarget): void {
-    this.pendingSessionTimeFocus = target;
-    window.requestAnimationFrame(() => {
-      this.restorePendingSessionTimeTriggerFocus();
+    return renderSessionRowMarkup({
+      session,
+      index,
+      renderSessionTimeInput: (sessionId, fieldName, value, pairedValue) =>
+        this.renderSessionTimeInput(sessionId, fieldName, value, pairedValue),
     });
-  }
-
-  private resumePendingSessionTimeWidgetOpen(): void {
-    if (!this.pendingSessionTimeOpen) {
-      return;
-    }
-
-    const pending = this.pendingSessionTimeOpen;
-    this.pendingSessionTimeOpen = null;
-    this.openSessionTimeWidget(pending.sessionId, pending.fieldName);
-  }
-
-  private openSessionTimeWidget(sessionId: string, fieldName: SessionTimeFieldName): void {
-    const field = this.getSessionTimeFieldElement(sessionId, fieldName);
-    const hiddenInput = field?.querySelector<HTMLInputElement>('.session-time-hidden-input');
-    const popoverSlot = field?.querySelector<HTMLElement>('.session-time-popover-slot');
-    if (!field || !hiddenInput || !popoverSlot) {
-      return;
-    }
-
-    this.sessionTimeWidget = {
-      sessionId,
-      fieldName,
-      committedValue: hiddenInput.value,
-      draftValue: hiddenInput.value,
-      openSegment: 'hour',
-    };
-
-    this.setSessionTimeFieldOpenState(field, true);
-    popoverSlot.innerHTML = this.renderSessionTimePopoverMarkup(
-      fieldName,
-      hiddenInput.value,
-      'hour',
-      this.getSessionTimeFieldValue(sessionId, getPairedSessionTimeFieldName(fieldName)) ?? undefined,
-    );
-  }
-
-  private renderOpenSessionTimeWidget(): void {
-    if (!this.sessionTimeWidget) {
-      return;
-    }
-
-    const field = this.getSessionTimeFieldElement(this.sessionTimeWidget.sessionId, this.sessionTimeWidget.fieldName);
-    const popoverSlot = field?.querySelector<HTMLElement>('.session-time-popover-slot');
-    if (!field || !popoverSlot) {
-      this.sessionTimeWidget = null;
-      return;
-    }
-
-    this.setSessionTimeFieldOpenState(field, true);
-    popoverSlot.innerHTML = this.renderSessionTimePopoverMarkup(
-      this.sessionTimeWidget.fieldName,
-      this.sessionTimeWidget.draftValue,
-      this.sessionTimeWidget.openSegment,
-      this.getSessionTimeFieldValue(
-        this.sessionTimeWidget.sessionId,
-        getPairedSessionTimeFieldName(this.sessionTimeWidget.fieldName),
-      ) ?? undefined,
-    );
-  }
-
-  private updateSessionTimeWidgetDraft(segment: SessionTimeWidgetSegment, value: string): void {
-    if (!this.sessionTimeWidget) {
-      return;
-    }
-
-    const timeOptions = this.getSessionTimeOptionsForField(this.sessionTimeWidget.sessionId, this.sessionTimeWidget.fieldName);
-    const nextParts = splitMeridiemTimeParts(this.sessionTimeWidget.draftValue);
-
-    if (segment === 'meridiem') {
-      nextParts.meridiem = value as GenericMeridiem;
-    } else if (segment === 'hour') {
-      nextParts.hour = String(Number(value) || 0).padStart(2, '0');
-    } else {
-      nextParts.minute = String(Number(value) || 0).padStart(2, '0');
-    }
-
-    const coerced = coerceMeridiemTimeParts(nextParts.meridiem, nextParts.hour, nextParts.minute, timeOptions);
-    const normalizedHour = String(Number(coerced.hour) || 0).padStart(2, '0');
-    const normalizedMinute = String(Number(coerced.minute) || 0).padStart(2, '0');
-    const canonicalHour =
-      coerced.meridiem === 'AM'
-        ? normalizedHour === '12'
-          ? '00'
-          : normalizedHour
-        : normalizedHour === '12'
-          ? '12'
-          : String(Number(normalizedHour) + 12).padStart(2, '0');
-
-    this.sessionTimeWidget.draftValue = `${canonicalHour}:${normalizedMinute}`;
-    this.sessionTimeWidget.openSegment = getNextSessionTimeMenuSegment(segment, this.sessionTimeWidget.openSegment);
-    this.renderOpenSessionTimeWidget();
-  }
-
-  private syncSessionEndTimeAfterStartChange(sessionId: string, startValue: string): void {
-    const endField = this.getSessionTimeFieldElement(sessionId, 'session-end');
-    const endHiddenInput = endField?.querySelector<HTMLInputElement>('.session-time-hidden-input');
-    if (!endField || !endHiddenInput) {
-      return;
-    }
-
-    const endOptions = getSessionTimeOptions('session-end', startValue);
-    if (endOptions.length === 0) {
-      return;
-    }
-
-    if (timeToMinutes(endHiddenInput.value) > timeToMinutes(startValue) && endOptions.includes(endHiddenInput.value)) {
-      return;
-    }
-
-    const nextEndValue = coerceTimeToOptions(endHiddenInput.value, endOptions);
-    if (nextEndValue === endHiddenInput.value) {
-      return;
-    }
-
-    endHiddenInput.value = nextEndValue;
-    this.updateSessionTimeTriggerLabel(endField, nextEndValue);
-  }
-
-  private shouldRestoreSessionTimeTriggerFocus(target: HTMLElement | null): boolean {
-    if (!target) {
-      return true;
-    }
-
-    return !target.closest('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
-  }
-
-  private closeSessionTimeWidget(options: {
-    reason: SessionTimeWidgetCloseReason;
-    outsideTarget?: HTMLElement | null;
-  }): void {
-    if (!this.sessionTimeWidget) {
-      this.resumePendingSessionTimeWidgetOpen();
-      return;
-    }
-
-    const widget = this.sessionTimeWidget;
-    const field = this.getSessionTimeFieldElement(widget.sessionId, widget.fieldName);
-    const hiddenInput = field?.querySelector<HTMLInputElement>('.session-time-hidden-input');
-    const popoverSlot = field?.querySelector<HTMLElement>('.session-time-popover-slot');
-    const hasChanged = widget.draftValue !== widget.committedValue;
-    const shouldCommit =
-      options.reason === 'enter' ||
-      options.reason === 'minute' ||
-      ((options.reason === 'outside' || options.reason === 'toggle') && hasChanged);
-    const shouldWriteCommittedValue = shouldCommit && hasChanged;
-    const shouldRestoreFocus =
-      options.reason === 'escape' ||
-      options.reason === 'enter' ||
-      options.reason === 'minute' ||
-      options.reason === 'toggle' ||
-      (options.reason === 'outside' && this.shouldRestoreSessionTimeTriggerFocus(options.outsideTarget ?? null));
-
-    this.sessionTimeWidget = null;
-    if (popoverSlot) {
-      popoverSlot.innerHTML = '';
-    }
-    if (field) {
-      this.setSessionTimeFieldOpenState(field, false);
-    }
-
-    if (shouldWriteCommittedValue && hiddenInput) {
-      hiddenInput.value = widget.draftValue;
-      this.updateSessionTimeTriggerLabel(field, widget.draftValue);
-
-      if (widget.fieldName === 'session-start') {
-        this.syncSessionEndTimeAfterStartChange(widget.sessionId, widget.draftValue);
-      }
-    }
-
-    if (shouldRestoreFocus) {
-      this.queueSessionTimeTriggerFocus({
-        sessionId: widget.sessionId,
-        fieldName: widget.fieldName,
-      });
-    }
-
-    if (shouldWriteCommittedValue) {
-      const form = field?.closest<HTMLFormElement>('form');
-      if (form) {
-        void this.handleCourseInput(form);
-        return;
-      }
-    }
-
-    if (!['render', 'resize', 'unload'].includes(options.reason)) {
-      this.resumePendingSessionTimeWidgetOpen();
-    }
-  }
-
-  private handleSessionTimeOptionClick(button: HTMLButtonElement): void {
-    if (!this.sessionTimeWidget) {
-      return;
-    }
-
-    const segment = button.dataset.sessionTimeOption as SessionTimeWidgetSegment | undefined;
-    const value = button.dataset.sessionTimeValue;
-    if (!segment || !value) {
-      return;
-    }
-
-    this.updateSessionTimeWidgetDraft(segment, value);
-  }
-
-  private handleSessionTimeWidgetClick(target: HTMLElement): boolean {
-    const activeWidget = this.sessionTimeWidget;
-    const activeField = activeWidget ? this.getSessionTimeFieldElement(activeWidget.sessionId, activeWidget.fieldName) : null;
-    const trigger = target.closest<HTMLButtonElement>('[data-session-time-trigger]');
-    const option = target.closest<HTMLButtonElement>('[data-session-time-option]');
-
-    if (activeWidget && activeField && !activeField.contains(target)) {
-      if (trigger) {
-        const pending = this.getSessionTimeTargetFromElement(trigger);
-        if (
-          pending &&
-          (pending.sessionId !== activeWidget.sessionId || pending.fieldName !== activeWidget.fieldName)
-        ) {
-          this.pendingSessionTimeOpen = pending;
-        }
-      }
-
-      this.closeSessionTimeWidget({ reason: 'outside', outsideTarget: target });
-      if (trigger) {
-        return true;
-      }
-    }
-
-    if (option) {
-      this.handleSessionTimeOptionClick(option);
-      return true;
-    }
-
-    if (!trigger) {
-      return false;
-    }
-
-    const sessionTimeTarget = this.getSessionTimeTargetFromElement(trigger);
-    if (!sessionTimeTarget) {
-      return false;
-    }
-
-    if (
-      activeWidget &&
-      activeWidget.sessionId === sessionTimeTarget.sessionId &&
-      activeWidget.fieldName === sessionTimeTarget.fieldName
-    ) {
-      this.closeSessionTimeWidget({ reason: 'toggle', outsideTarget: trigger });
-      return true;
-    }
-
-    this.pendingSessionTimeOpen = null;
-    this.openSessionTimeWidget(sessionTimeTarget.sessionId, sessionTimeTarget.fieldName);
-    return true;
   }
 
   private renderTimetable(
@@ -2642,7 +718,7 @@ class SoostaApp {
     `;
   }
 
-  private renderAgendaItem(item: AgendaItem): string {
+  renderAgendaItem(item: AgendaItem): string {
     return `
       <button type="button" class="agenda-item ${item.isOngoing ? 'is-live' : ''} ${item.isNext ? 'is-next' : ''}" data-action="select-course" data-course-id="${escapeHtml(item.courseId)}">
         <span class="agenda-swatch" style="--swatch:${sanitizeColor(item.color)}"></span>
@@ -2652,15 +728,6 @@ class SoostaApp {
         </div>
         ${item.isOngoing ? '<span class="agenda-state live">진행 중</span>' : item.isNext ? '<span class="agenda-state">다음 수업</span>' : ''}
       </button>
-    `;
-  }
-
-  private renderLoadingCard(message: string): string {
-    return `
-      <section class="panel-card loading-card">
-        <div class="loading-dot"></div>
-        <p>${escapeHtml(message)}</p>
-      </section>
     `;
   }
 
@@ -2805,340 +872,6 @@ class SoostaApp {
     );
   }
 
-  private async handleAction(action: string, element: HTMLElement): Promise<void> {
-    this.closeSessionContextMenu();
-
-    switch (action) {
-      case 'minimize-window':
-        await window.soosta.minimizeWindow();
-        return;
-      case 'toggle-maximize-window':
-        await window.soosta.toggleMaximizeWindow();
-        return;
-      case 'close-window':
-        await window.soosta.closeWindow();
-        return;
-      default:
-        break;
-    }
-
-    if (!this.data) {
-      return;
-    }
-
-    if (
-      this.hasUnsavedChanges &&
-      !this.canAutosaveDraft &&
-      ['select-board', 'new-board', 'duplicate-board', 'delete-board', 'delete-course', 'delete-course-from-menu', 'export-data', 'import-data', 'toggle-lecture-reminders', 'toggle-lecture-reminder-lead', 'reset-lecture-reminder-times'].includes(action)
-    ) {
-      this.showBanner({ tone: 'error', text: '입력을 먼저 정리해주세요. 저장이 보류된 항목이 있어요.' });
-      return;
-    }
-
-    switch (action) {
-      case 'new-course':
-        if (!this.confirmDiscardInvalidInspectorDraft()) {
-          return;
-        }
-        this.selectedCourseId = null;
-        this.pendingCourseId = generateId('course');
-        this.beginInspectorOpenAnimation();
-        this.showBanner({ tone: 'info', text: '강의 입력 폼을 초기화했어요.' });
-        this.render();
-        return;
-      case 'select-course':
-        if (!this.confirmDiscardInvalidInspectorDraft()) {
-          return;
-        }
-        this.selectedCourseId = element.dataset.courseId ?? null;
-        this.pendingCourseId = null;
-        this.beginInspectorOpenAnimation();
-        this.dismissBanner();
-        this.render();
-        return;
-      case 'select-board': {
-        const boardId = element.dataset.boardId;
-        if (!boardId || boardId === this.data.activeBoardId) {
-          return;
-        }
-
-        await this.persist(
-          { ...this.data, activeBoardId: boardId },
-          '보드를 전환했어요.',
-          () => {
-            this.selectedCourseId = null;
-            this.pendingCourseId = null;
-          },
-        );
-        return;
-      }
-      case 'new-board': {
-        const newBoard = createBlankBoard(this.data.boards.length);
-        await this.persist(
-          {
-            ...this.data,
-            activeBoardId: newBoard.id,
-            boards: [newBoard, ...this.data.boards],
-          },
-          '새 시간표 보드를 만들었어요.',
-          () => {
-            this.selectedCourseId = null;
-            this.pendingCourseId = null;
-          },
-        );
-        return;
-      }
-      case 'duplicate-board': {
-        const duplicated = duplicateBoard(this.getActiveBoard());
-        await this.persist(
-          {
-            ...this.data,
-            activeBoardId: duplicated.id,
-            boards: [duplicated, ...this.data.boards],
-          },
-          '현재 보드를 사본으로 복제했어요.',
-          () => {
-            this.selectedCourseId = null;
-            this.pendingCourseId = null;
-          },
-        );
-        return;
-      }
-      case 'delete-board': {
-        if (this.data.boards.length === 1) {
-          this.showBanner({ tone: 'error', text: '마지막 보드는 삭제할 수 없어요.' });
-          return;
-        }
-
-        const approved = window.confirm('현재 시간표 보드를 삭제할까요? 이 작업은 되돌릴 수 없습니다.');
-        if (!approved) {
-          return;
-        }
-
-        const activeBoardId = this.data.activeBoardId;
-        const remainingBoards = this.data.boards.filter((board) => board.id !== activeBoardId);
-        await this.persist(
-          {
-            ...this.data,
-            activeBoardId: remainingBoards[0].id,
-            boards: remainingBoards,
-          },
-          '보드를 삭제했어요.',
-          () => {
-            this.selectedCourseId = null;
-            this.pendingCourseId = null;
-          },
-        );
-        return;
-      }
-      case 'delete-course': {
-        const courseId = element.dataset.courseId ?? this.selectedCourseId;
-        if (!courseId) {
-          return;
-        }
-
-        await this.deleteCourse(courseId);
-        return;
-      }
-      case 'delete-course-from-menu': {
-        const courseId = element.dataset.courseId;
-        if (!courseId) {
-          return;
-        }
-
-        await this.deleteCourse(courseId, false);
-        return;
-      }
-      case 'toggle-color-field': {
-        this.isCourseColorFieldExpanded = !this.isCourseColorFieldExpanded;
-        const form = element.closest<HTMLFormElement>('form');
-        if (form?.id === 'course-form') {
-          this.syncCourseColorFieldDisclosure(form);
-        } else {
-          this.renderFrame(true);
-        }
-        return;
-      }
-      case 'recommend-color': {
-        const color = element.dataset.color;
-        const form = this.root.querySelector<HTMLFormElement>('#course-form');
-        if (!color || !form) {
-          return;
-        }
-
-        this.applyCourseColor(form, color);
-        await this.handleCourseInput(form);
-        return;
-      }
-      case 'add-session': {
-        const course = this.getEditableCourse();
-        const nextCourse = {
-          ...course,
-          sessions: [...course.sessions, createBlankSession()],
-        };
-        this.selectedCourseId = nextCourse.id;
-        this.pendingCourseId = null;
-        this.applyLocalUpdate(
-          this.upsertCourse(nextCourse),
-          {
-            successText: '세션 변경사항을 자동 저장했어요.',
-            invalidText: '세션 구성을 확인하면 자동 저장돼요.',
-          },
-          validateCourse(nextCourse).length === 0,
-        );
-        return;
-      }
-      case 'remove-session': {
-        const course = this.getSelectedCourse();
-        if (!course || course.sessions.length === 1) {
-          this.showBanner({ tone: 'error', text: '세션은 최소 하나 이상 필요해요.' });
-          return;
-        }
-
-        const row = element.closest<HTMLElement>('.session-row');
-        const sessionId = row?.dataset.sessionId;
-        if (!sessionId) {
-          return;
-        }
-
-        const nextCourse = {
-          ...course,
-          sessions: course.sessions.filter((session) => session.id !== sessionId),
-        };
-        this.applyLocalUpdate(
-          this.upsertCourse(nextCourse),
-          {
-            successText: '세션 변경사항을 자동 저장했어요.',
-            invalidText: '세션 구성을 확인하면 자동 저장돼요.',
-          },
-          validateCourse(nextCourse).length === 0,
-        );
-        return;
-      }
-      case 'toggle-lecture-reminders': {
-        const nextEnabled = !this.areLectureRemindersEnabled();
-        this.lastReminderSweepAt = Date.now();
-
-        await this.persist(
-          {
-            ...this.data,
-            preferences: {
-              ...this.data.preferences,
-              lectureRemindersEnabled: nextEnabled,
-            },
-          },
-          nextEnabled ? '강의 알림을 켰어요.' : '강의 알림을 껐어요.',
-          () => {
-            if (!nextEnabled) {
-              this.dismissLectureReminder();
-            }
-          },
-        );
-
-        this.lastReminderSweepAt = Date.now();
-        if (nextEnabled) {
-          this.runReminderSweep();
-        }
-        return;
-      }
-      case 'toggle-lecture-reminder-lead': {
-        const requestedLeadMinutes = Number(element.dataset.leadMinutes);
-        if (!isReminderLeadMinutes(requestedLeadMinutes)) {
-          return;
-        }
-
-        const currentLeadMinutes = this.getLectureReminderLeadMinutes();
-        const nextLeadMinutes = currentLeadMinutes.includes(requestedLeadMinutes)
-          ? currentLeadMinutes.filter((minutes) => minutes !== requestedLeadMinutes)
-          : sortUniqueLectureReminderLeadMinutes([...currentLeadMinutes, requestedLeadMinutes]);
-
-        this.lastReminderSweepAt = Date.now();
-        await this.persist(
-          {
-            ...this.data,
-            preferences: {
-              ...this.data.preferences,
-              lectureReminderLeadMinutes: nextLeadMinutes,
-            },
-          },
-          nextLeadMinutes.includes(requestedLeadMinutes)
-            ? `${formatReminderLeadLabel(requestedLeadMinutes)} 자동 알림을 추가했어요.`
-            : `${formatReminderLeadLabel(requestedLeadMinutes)} 자동 알림을 해제했어요.`,
-        );
-        this.lastReminderSweepAt = Date.now();
-        return;
-      }
-      case 'reset-lecture-reminder-times': {
-        const nextLeadMinutes = getDefaultLectureReminderLeadMinutes();
-
-        this.lastReminderSweepAt = Date.now();
-        await this.persist(
-          {
-            ...this.data,
-            preferences: {
-              ...this.data.preferences,
-              lectureReminderLeadMinutes: nextLeadMinutes,
-            },
-          },
-          `알림 시각을 기본값(${formatReminderLeadList(nextLeadMinutes)})으로 되돌렸어요.`,
-        );
-        this.lastReminderSweepAt = Date.now();
-        return;
-      }
-      case 'test-lecture-reminder':
-        await this.triggerManualLectureReminder();
-        return;
-      case 'export-timetable-jpg':
-        await this.exportTimetableJpeg();
-        return;
-      case 'toggle-timetable-fit':
-        this.toggleTimetableFitMode();
-        return;
-      case 'export-data': {
-        try {
-          const result = await window.soosta.exportData(this.data);
-          if (!result.cancelled) {
-            this.showBanner({ tone: 'success', text: `시간표를 JSON으로 내보냈어요. ${result.filePath ?? ''}`.trim() });
-          }
-        } catch (error) {
-          this.showBanner({ tone: 'error', text: this.getErrorMessage(error) });
-        }
-        return;
-      }
-      case 'import-data': {
-        try {
-          const result = await window.soosta.importData();
-          if (!result.cancelled && result.data) {
-            this.clearAutosaveTimer();
-            this.data = result.data;
-            this.lastPersistedData = result.data;
-            this.selectedCourseId = null;
-            this.pendingCourseId = null;
-            this.localRevision += 1;
-            this.lastSavedRevision = this.localRevision;
-            this.saveInFlightRevision = null;
-            this.hasUnsavedChanges = false;
-            this.canAutosaveDraft = false;
-            this.showBanner({ tone: 'success', text: '백업 파일을 가져와 현재 시간표를 갱신했어요.' });
-            this.render();
-          }
-        } catch (error) {
-          this.showBanner({ tone: 'error', text: this.getErrorMessage(error) });
-        }
-        return;
-      }
-      case 'dismiss-lecture-reminder': {
-        this.dismissLectureReminder();
-        return;
-      }
-      case 'close-inspector':
-        await this.handleCloseInspector();
-        return;
-      default:
-        return;
-    }
-  }
-
   private async handleSubmit(form: HTMLFormElement): Promise<void> {
     if (form.id === 'board-form') {
       await this.handleBoardInput(form);
@@ -3221,7 +954,7 @@ class SoostaApp {
     this.lastReminderSweepAt = Date.now();
   }
 
-  private async handleCourseInput(form: HTMLFormElement): Promise<void> {
+  async handleCourseInput(form: HTMLFormElement): Promise<void> {
     if (!this.data) {
       return;
     }
@@ -3275,7 +1008,7 @@ class SoostaApp {
     return this.composingField === target || ('isComposing' in event && Boolean((event as InputEvent).isComposing));
   }
 
-  private applyLocalUpdate(
+  applyLocalUpdate(
     nextData: AppData,
     messages: { successText: string; invalidText: string },
     canAutosave: boolean,
@@ -3310,7 +1043,7 @@ class SoostaApp {
     }, delay);
   }
 
-  private clearAutosaveTimer(): void {
+  clearAutosaveTimer(): void {
     if (this.saveTimer !== null) {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
@@ -3573,7 +1306,7 @@ class SoostaApp {
     this.restorePendingSessionTimeTriggerFocus();
     this.resumePendingSessionTimeWidgetOpen();
     if (this.dragState) {
-      this.renderDragPreview();
+      renderDragPreviewFromModule(this as never);
     }
     this.queueTimetableFitSync(preserveFocus);
   }
@@ -3811,377 +1544,11 @@ class SoostaApp {
     }
   }
 
-  private startSessionDrag(event: PointerEvent, block: HTMLElement): void {
-    if (!this.data || event.button !== 0) {
-      return;
-    }
-
-    const courseId = block.dataset.courseId;
-    const sessionId = block.dataset.sessionId;
-    const day = block.dataset.day as DayKey | undefined;
-    const startMinutes = Number(block.dataset.startMinutes);
-    const endMinutes = Number(block.dataset.endMinutes);
-    if (!courseId || !sessionId || !day || Number.isNaN(startMinutes) || Number.isNaN(endMinutes)) {
-      return;
-    }
-
-    const rect = block.getBoundingClientRect();
-    this.pendingSessionDrag = {
-      block,
-      courseId,
-      sessionId,
-      day,
-      startMinutes,
-      endMinutes,
-      offsetY: event.clientY - rect.top,
-      pointerId: event.pointerId,
-      originClientX: event.clientX,
-      originClientY: event.clientY,
-    };
-  }
-
-  private handleSessionDragMove(event: PointerEvent): void {
-    if (!this.data) {
-      return;
-    }
-
-    if (!this.dragState && this.pendingSessionDrag) {
-      if (event.pointerId !== this.pendingSessionDrag.pointerId) {
-        return;
-      }
-
-      const deltaX = event.clientX - this.pendingSessionDrag.originClientX;
-      const deltaY = event.clientY - this.pendingSessionDrag.originClientY;
-      if (Math.hypot(deltaX, deltaY) < SESSION_DRAG_START_DISTANCE_PX) {
-        return;
-      }
-
-      if (!this.activatePendingSessionDrag()) {
-        return;
-      }
-    }
-
-    if (!this.dragState) {
-      return;
-    }
-
-    this.currentDragPointer = { clientX: event.clientX, clientY: event.clientY };
-    this.pendingDragPointer = { clientX: event.clientX, clientY: event.clientY };
-    if (this.dragMoveFrame !== null) {
-      return;
-    }
-
-    this.dragMoveFrame = window.requestAnimationFrame(() => {
-      this.dragMoveFrame = null;
-      const pointer = this.pendingDragPointer;
-      this.pendingDragPointer = null;
-      if (!pointer) {
-        return;
-      }
-
-      this.updateSessionDragPlacement(pointer.clientX, pointer.clientY);
-    });
-  }
-
-  private async finishSessionDrag(event: PointerEvent): Promise<void> {
-    if (this.pendingSessionDrag) {
-      if (event.pointerId === this.pendingSessionDrag.pointerId) {
-        this.pendingSessionDrag = null;
-      }
-      return;
-    }
-
-    if (!this.dragState || !this.data) {
-      return;
-    }
-
-    const dragState = this.dragState;
-    const dropTarget = this.getDropTargetSession(event.clientX, event.clientY, dragState);
-    const action = resolveSessionDropAction(
-      this.getActiveBoard(),
-      { courseId: dragState.courseId, sessionId: dragState.sessionId },
-      {
-        day: dragState.previewDay,
-        startMinutes: dragState.previewStartMinutes,
-        endMinutes: dragState.previewEndMinutes,
-      },
-      dropTarget,
-    );
-    this.suppressSessionBlockClickTemporarily();
-    this.resetSessionDrag();
-
-    if (action.kind === 'reject') {
-      this.showBanner({
-        tone: 'error',
-        text: getSessionDropRejectMessage(action.reason),
-      });
-      this.render();
-      return;
-    }
-
-    if (action.kind === 'swap') {
-      const nextData = this.withUpdatedBoard((board) => ({
-        ...swapBoardSessions(
-          board,
-          { courseId: dragState.courseId, sessionId: dragState.sessionId },
-          action.target,
-        ),
-        updatedAt: new Date().toISOString(),
-      }));
-
-      this.applyLocalUpdate(
-        nextData,
-        {
-          successText: '드래그한 강의 위치를 서로 바꿨어요.',
-          invalidText: '드래그 변경사항을 반영하지 못했어요.',
-        },
-        true,
-      );
-      return;
-    }
-
-    if (action.kind === 'noop') {
-      this.dismissBanner();
-      this.render();
-      return;
-    }
-
-    const nextData = this.withUpdatedBoard((board) => ({
-      ...updateBoardSessionSchedule(board, dragState.courseId, dragState.sessionId, {
-        day: action.placement.day,
-        startMinutes: action.placement.startMinutes,
-        endMinutes: action.placement.endMinutes,
-      }),
-      updatedAt: new Date().toISOString(),
-    }));
-
-    this.applyLocalUpdate(
-      nextData,
-      {
-        successText: '드래그한 시간표 변경사항을 자동 저장했어요.',
-        invalidText: '드래그 변경사항을 반영하지 못했어요.',
-      },
-      true,
-    );
-  }
-
-  private resetSessionDrag(): void {
-    if (this.dragMoveFrame !== null) {
-      window.cancelAnimationFrame(this.dragMoveFrame);
-      this.dragMoveFrame = null;
-    }
-    this.pendingSessionDrag = null;
-    this.pendingDragPointer = null;
-    this.currentDragPointer = null;
-    this.dragState = null;
-    document.body.classList.remove('is-dragging-session');
-    this.root.querySelector('.session-drag-preview')?.remove();
-    this.root.querySelector('.session-block.is-drag-origin')?.classList.remove('is-drag-origin');
-  }
-
-  private activatePendingSessionDrag(): boolean {
-    if (!this.data || !this.pendingSessionDrag) {
-      return false;
-    }
-
-    const dragColumns = this.getDragColumns();
-    if (dragColumns.length === 0) {
-      this.pendingSessionDrag = null;
-      return false;
-    }
-
-    const pendingDrag = this.pendingSessionDrag;
-    const range = getGridRange(this.getActiveBoard());
-    this.clearAutosaveTimer();
-    try {
-      pendingDrag.block.setPointerCapture(pendingDrag.pointerId);
-    } catch (_error) {
-      // Best-effort only; dragging still works without pointer capture.
-    }
-
-    pendingDrag.block.classList.add('is-drag-origin');
-    document.body.classList.add('is-dragging-session');
-    this.currentDragPointer = { clientX: pendingDrag.originClientX, clientY: pendingDrag.originClientY };
-    this.dragState = {
-      courseId: pendingDrag.courseId,
-      sessionId: pendingDrag.sessionId,
-      durationMinutes: pendingDrag.endMinutes - pendingDrag.startMinutes,
-      offsetY: pendingDrag.offsetY,
-      pointerId: pendingDrag.pointerId,
-      originDay: pendingDrag.day,
-      originStartMinutes: pendingDrag.startMinutes,
-      previewDay: pendingDrag.day,
-      previewStartMinutes: pendingDrag.startMinutes,
-      previewEndMinutes: pendingDrag.endMinutes,
-      previewLabel: `${minutesToTime(pendingDrag.startMinutes)}–${minutesToTime(pendingDrag.endMinutes)}`,
-      dragColumns,
-      gridStartMinutes: range.startMinutes,
-      gridEndMinutes: range.endMinutes,
-    };
-    this.pendingSessionDrag = null;
-    this.renderDragPreview();
-    return true;
-  }
-
-  private suppressSessionBlockClickTemporarily(): void {
-    this.clearSuppressedSessionBlockClick();
-    this.suppressSessionBlockClick = true;
-    this.suppressSessionBlockClickTimer = setTimeout(() => {
-      this.clearSuppressedSessionBlockClick();
-    }, 0);
-  }
-
-  private consumeSuppressedSessionBlockClick(target: HTMLElement): boolean {
-    if (!this.suppressSessionBlockClick || !target.closest('.session-block')) {
-      return false;
-    }
-
-    this.clearSuppressedSessionBlockClick();
-    return true;
-  }
-
-  private clearSuppressedSessionBlockClick(): void {
-    if (this.suppressSessionBlockClickTimer !== null) {
-      clearTimeout(this.suppressSessionBlockClickTimer);
-      this.suppressSessionBlockClickTimer = null;
-    }
-
-    this.suppressSessionBlockClick = false;
-  }
-
-  private renderDragPreview(): void {
-    if (!this.dragState || !this.data) {
-      return;
-    }
-
-    const dayColumn = this.dragState.dragColumns.find((column) => column.day === this.dragState?.previewDay)?.element;
-    if (!dayColumn) {
-      return;
-    }
-
-    const board = this.getActiveBoard();
-    const pixelsPerMinute = this.getTimetablePixelsPerMinute();
-    const top = (this.dragState.previewStartMinutes - this.dragState.gridStartMinutes) * pixelsPerMinute;
-    const blockHeight = Math.max(this.getMinimumSessionBlockHeight(), this.dragState.durationMinutes * pixelsPerMinute - 8);
-    const course = board.courses.find((item) => item.id === this.dragState?.courseId);
-    const preview = this.root.querySelector<HTMLElement>('.session-drag-preview') ?? document.createElement('div');
-
-    preview.className = 'session-block session-drag-preview';
-    preview.style.setProperty('--course-color', sanitizeColor(course?.color ?? '#7c72ff'));
-    preview.style.top = `${top + 4}px`;
-    preview.style.height = `${blockHeight}px`;
-    preview.style.left = '6px';
-    preview.style.width = 'calc(100% - 12px)';
-    preview.innerHTML = `
-      <span class="session-block-title">${escapeHtml(course?.title || '드래그 중')}</span>
-      <span class="session-block-meta session-block-time">${escapeHtml(this.dragState.previewLabel)}</span>
-      <span class="session-block-meta">${escapeHtml(DAY_LABELS[this.dragState.previewDay].full)}</span>
-    `;
-    dayColumn.append(preview);
-  }
-
-  private getDragColumns(): SessionDragState['dragColumns'] {
-    return [...this.root.querySelectorAll<HTMLElement>('.day-column')]
-      .map((element, index) => {
-        const day = DAY_ORDER[index];
-        if (!day) {
-          return null;
-        }
-
-        return {
-          day,
-          element,
-          rect: element.getBoundingClientRect(),
-        };
-      })
-      .filter((column): column is SessionDragState['dragColumns'][number] => column !== null);
-  }
-
-  private getDropTargetSession(
-    clientX: number,
-    clientY: number,
-    dragState: SessionDragState,
-  ): { courseId: string; sessionId: string } | null {
-    const target = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
-    const block = target?.closest<HTMLElement>('.session-block');
-    if (!block || block.classList.contains('session-drag-preview')) {
-      return null;
-    }
-
-    const courseId = block.dataset.courseId;
-    const sessionId = block.dataset.sessionId;
-    if (!courseId || !sessionId) {
-      return null;
-    }
-
-    if (courseId === dragState.courseId && sessionId === dragState.sessionId) {
-      return null;
-    }
-
-    return { courseId, sessionId };
-  }
-
-  private updateSessionDragPlacement(clientX: number, clientY: number): void {
-    if (!this.dragState) {
-      return;
-    }
-
-    this.dragState.dragColumns = this.getDragColumns();
-    if (this.dragState.dragColumns.length === 0) {
-      return;
-    }
-
-    const hoveredIndex = this.dragState.dragColumns.reduce((closestIndex, column, index) => {
-      if (clientX >= column.rect.left && clientX <= column.rect.right) {
-        return index;
-      }
-
-      const closestRect = this.dragState?.dragColumns[closestIndex]?.rect;
-      if (!closestRect) {
-        return index;
-      }
-
-      const closestDistance = Math.min(Math.abs(clientX - closestRect.left), Math.abs(clientX - closestRect.right));
-      const distance = Math.min(Math.abs(clientX - column.rect.left), Math.abs(clientX - column.rect.right));
-      return distance < closestDistance ? index : closestIndex;
-    }, 0);
-
-    const columnRect = this.dragState.dragColumns[hoveredIndex]?.rect;
-    if (!columnRect) {
-      return;
-    }
-
-    const pixelsPerMinute = this.getTimetablePixelsPerMinute();
-    const rawStartMinutes =
-      this.dragState.gridStartMinutes + ((clientY - columnRect.top - this.dragState.offsetY) / pixelsPerMinute);
-    const placement = resolveDraggedSessionPlacement({
-      dayIndex: hoveredIndex,
-      rawStartMinutes,
-      durationMinutes: this.dragState.durationMinutes,
-      gridStartMinutes: this.dragState.gridStartMinutes,
-      gridEndMinutes: this.dragState.gridEndMinutes,
-    });
-
-    this.dragState.previewDay = placement.day;
-    this.dragState.previewStartMinutes = placement.startMinutes;
-    this.dragState.previewEndMinutes = placement.endMinutes;
-    this.dragState.previewLabel = `${minutesToTime(this.dragState.previewStartMinutes)}–${minutesToTime(this.dragState.previewEndMinutes)}`;
-    this.renderDragPreview();
-  }
-
-  private getTimetablePixelsPerMinute(): number {
+  getTimetablePixelsPerMinute(): number {
     return this.timetableFitPixelsPerMinute ?? getTimetablePixelsPerMinute(this.viewportHeight || this.getViewportHeight());
   }
 
-  private syncSessionDragToViewport(): void {
-    if (!this.dragState || !this.currentDragPointer) {
-      return;
-    }
-
-    this.updateSessionDragPlacement(this.currentDragPointer.clientX, this.currentDragPointer.clientY);
-  }
-
-  private withUpdatedBoard(mutator: (board: TimetableBoard) => TimetableBoard): AppData {
+  withUpdatedBoard(mutator: (board: TimetableBoard) => TimetableBoard): AppData {
     if (!this.data) {
       throw new Error('앱 데이터가 아직 준비되지 않았습니다.');
     }
@@ -4193,7 +1560,7 @@ class SoostaApp {
     };
   }
 
-  private getActiveBoard(): TimetableBoard {
+  getActiveBoard(): TimetableBoard {
     if (!this.data) {
       throw new Error('앱 데이터가 아직 준비되지 않았습니다.');
     }
@@ -4202,7 +1569,7 @@ class SoostaApp {
     return boards.find((board) => board.id === activeBoardId) ?? boards[0];
   }
 
-  private getSelectedCourse(): Course | null {
+  getSelectedCourse(): Course | null {
     const board = this.getActiveBoard();
     return board.courses.find((course) => course.id === this.selectedCourseId) ?? null;
   }
@@ -4395,7 +1762,7 @@ class SoostaApp {
     return Math.max(this.root.clientHeight, window.innerHeight || 0);
   }
 
-  private getErrorMessage(error: unknown): string {
+  getErrorMessage(error: unknown): string {
     if (error instanceof Error) {
       return error.message;
     }
@@ -4412,6 +1779,117 @@ class SoostaApp {
     return element;
   }
 }
+
+
+const feedbackControllerMethods = {
+  startCurrentTimeTicker(this: SoostaApp): void {
+    startCurrentTimeTickerFromModule(this);
+  },
+  stopCurrentTimeTicker(this: SoostaApp): void {
+    stopCurrentTimeTickerFromModule(this);
+  },
+  syncCurrentTimeUi(this: SoostaApp, now = new Date()): void {
+    syncCurrentTimeUiFromModule(this, now);
+  },
+  queueCurrentTimeIndicatorSync(this: SoostaApp): void {
+    queueCurrentTimeIndicatorSyncFromModule(this);
+  },
+  cancelQueuedCurrentTimeIndicatorSync(this: SoostaApp): void {
+    cancelQueuedCurrentTimeIndicatorSyncFromModule(this);
+  },
+  syncCurrentTimeIndicator(this: SoostaApp, now = new Date()): void {
+    syncCurrentTimeIndicatorFromModule(this, now);
+  },
+  renderBannerToast(this: SoostaApp): void {
+    renderBannerToastFromModule(this);
+  },
+  startReminderSweepLoop(this: SoostaApp): void {
+    startReminderSweepLoopFromModule(this);
+  },
+  stopReminderSweepLoop(this: SoostaApp): void {
+    stopReminderSweepLoopFromModule(this);
+  },
+  areLectureRemindersEnabled(this: SoostaApp): boolean {
+    return areLectureRemindersEnabledFromModule(this);
+  },
+  getLectureReminderLeadMinutes(this: SoostaApp): LectureReminderLeadMinutes[] {
+    return getLectureReminderLeadMinutesFromModule(this);
+  },
+  getLectureReminderSummary(this: SoostaApp): string {
+    return getLectureReminderSummaryFromModule(this);
+  },
+  runReminderSweep(this: SoostaApp): void {
+    runReminderSweepFromModule(this);
+  },
+  async triggerManualLectureReminder(this: SoostaApp): Promise<void> {
+    await triggerManualLectureReminderFromModule(this);
+  },
+  dismissLectureReminder(this: SoostaApp): void {
+    dismissLectureReminderFromModule(this);
+  },
+  showBanner(this: SoostaApp, banner: Banner): void {
+    showBannerFromModule(this, banner);
+  },
+  dismissBanner(this: SoostaApp, immediate = false): void {
+    dismissBannerFromModule(this, immediate);
+  },
+};
+
+const sessionTimeControllerMethods = {
+  renderSessionTimeInput(this: SoostaApp, sessionId: string, name: SessionTimeFieldName, value: string, pairedValue?: string): string {
+    return renderSessionTimeInputFromModule(sessionId, name, value, pairedValue);
+  },
+  restorePendingSessionTimeTriggerFocus(this: SoostaApp): void {
+    restorePendingSessionTimeTriggerFocusFromModule(this as never);
+  },
+  resumePendingSessionTimeWidgetOpen(this: SoostaApp): void {
+    resumePendingSessionTimeWidgetOpenFromModule(this as never);
+  },
+  renderOpenSessionTimeWidget(this: SoostaApp): void {
+    renderOpenSessionTimeWidgetFromModule(this as never);
+  },
+  syncSessionEndTimeAfterStartChange(this: SoostaApp, sessionId: string, startValue: string): void {
+    syncSessionEndTimeAfterStartChangeFromModule(this as never, sessionId, startValue);
+  },
+  closeSessionTimeWidget(this: SoostaApp, options: { reason: SessionTimeWidgetCloseReason; outsideTarget?: HTMLElement | null }): void {
+    closeSessionTimeWidgetFromModule(this as never, options);
+  },
+  handleSessionTimeWidgetClick(this: SoostaApp, target: HTMLElement): boolean {
+    return handleSessionTimeWidgetClickFromModule(this as never, target);
+  },
+};
+
+const dragDropControllerMethods = {
+  startSessionDrag(this: SoostaApp, event: PointerEvent, block: HTMLElement): void {
+    startSessionDragFromModule(this as never, event, block);
+  },
+  handleSessionDragMove(this: SoostaApp, event: PointerEvent): void {
+    handleSessionDragMoveFromModule(this as never, event);
+  },
+  async finishSessionDrag(this: SoostaApp, event: PointerEvent): Promise<void> {
+    await finishSessionDragFromModule(this as never, event);
+  },
+  resetSessionDrag(this: SoostaApp): void {
+    resetSessionDragFromModule(this as never);
+  },
+  consumeSuppressedSessionBlockClick(this: SoostaApp, target: HTMLElement): boolean {
+    return consumeSuppressedSessionBlockClickFromModule(this as never, target);
+  },
+  syncSessionDragToViewport(this: SoostaApp): void {
+    syncSessionDragToViewportFromModule(this as never);
+  },
+};
+
+const routingControllerMethods = {
+  bindEvents(this: SoostaApp): void {
+    bindRendererEvents(this as never);
+  },
+  async handleAction(this: SoostaApp, action: string, element: HTMLElement): Promise<void> {
+    await handleRendererAction(this as never, action, element);
+  },
+};
+
+Object.assign(SoostaApp.prototype, feedbackControllerMethods, sessionTimeControllerMethods, dragDropControllerMethods, routingControllerMethods);
 
 export const bootstrapApp = async (root: HTMLDivElement | null): Promise<void> => {
   if (!root) {

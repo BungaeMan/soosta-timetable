@@ -2466,14 +2466,12 @@ textarea {
 }
 
 .color-field-section,
-.color-preview-copy,
 .color-channel-field {
   display: flex;
   flex-direction: column;
 }
 
-.color-field-section,
-.color-preview-copy {
+.color-field-section {
   gap: 10px;
 }
 
@@ -2483,7 +2481,6 @@ textarea {
 
 .color-field-heading,
 .color-picker-row,
-.color-preview-card,
 .color-swatch-button {
   display: flex;
   align-items: center;
@@ -2496,8 +2493,15 @@ textarea {
   flex-wrap: wrap;
 }
 
-.color-field-heading strong,
-.color-preview-copy strong {
+.color-field-heading-copy {
+  display: flex;
+  flex: 1 1 220px;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.color-field-heading strong {
   color: var(--text);
 }
 
@@ -2567,13 +2571,37 @@ textarea {
   flex-wrap: wrap;
 }
 
-.color-preview-card {
-  min-width: 0;
-  flex: 1;
-  padding: 10px 12px;
-  border: 1px solid rgba(59, 72, 108, 0.1);
-  border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.78);
+.color-randomize-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid rgba(59, 72, 108, 0.12);
+  border-radius: var(--radius-xs);
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--text-secondary);
+  box-shadow: none;
+  transition:
+    border-color var(--motion-quick) var(--ease-soft),
+    background var(--motion-quick) var(--ease-soft),
+    color var(--motion-quick) var(--ease-soft),
+    transform var(--motion-quick) var(--ease-standard);
+}
+
+.color-randomize-button:hover,
+.color-randomize-button:focus-visible {
+  border-color: rgba(110, 103, 255, 0.24);
+  background: rgba(110, 103, 255, 0.08);
+  color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.color-randomize-button svg {
+  width: 15px;
+  height: 15px;
 }
 
 .color-preview-swatch {
@@ -2583,20 +2611,6 @@ textarea {
   box-shadow:
     inset 0 0 0 1px rgba(255, 255, 255, 0.72),
     0 6px 14px color-mix(in srgb, var(--swatch) 18%, transparent);
-}
-
-.color-preview-copy {
-  min-width: 0;
-  gap: 4px;
-}
-
-.color-preview-copy strong {
-  font-size: 13px;
-  letter-spacing: -0.01em;
-}
-
-.color-preview-copy span {
-  color: var(--text-secondary);
 }
 
 .color-channel-field input {

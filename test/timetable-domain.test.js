@@ -11,6 +11,7 @@ const {
 } = require('../dist-test/shared/reminders.js');
 const { createReminderPopupMarkup } = require('../dist-test/shared/reminder-popup.js');
 const {
+  generateRandomCourseColor,
   getCourseColorRecommendations,
   hexColorToRgb,
   normalizeCourseDraft,
@@ -47,6 +48,7 @@ const {
   getFreeWindows,
   getNextSession,
   getPositionedSessions,
+  getTodayAgenda,
   getSessionDropRejectMessage,
   resolveSessionDropAction,
   resolveDraggedSessionPlacement,
@@ -71,6 +73,24 @@ const {
 } = require('../dist-test/renderer/domain/export-image.js');
 
 const rendererAppSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'app.ts'), 'utf8');
+const rendererAppModuleSource = fs
+  .readdirSync(path.join(__dirname, '..', 'src', 'renderer', 'app'))
+  .filter((name) => name.endsWith('.ts'))
+  .sort()
+  .map((name) => fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'app', name), 'utf8'))
+  .join('\n');
+const rendererSource = `${rendererAppSource}\n${rendererAppModuleSource}`;
+
+const rendererSupportSource = [
+  rendererAppSource,
+  fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'app', 'actions.ts'), 'utf8'),
+  fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'app', 'events.ts'), 'utf8'),
+  fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'app', 'feedback.ts'), 'utf8'),
+  fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'app', 'rendering.ts'), 'utf8'),
+  fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'app', 'render-sections.ts'), 'utf8'),
+  fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'app', 'session-time.ts'), 'utf8'),
+  fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'app', 'shared.ts'), 'utf8'),
+].join('\n');
 const exportImageSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'domain', 'export-image.ts'), 'utf8');
 const indexCssSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.css'), 'utf8');
 const mainProcessSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.ts'), 'utf8');
@@ -87,6 +107,49 @@ const getCssBlock = (selector) => {
   const match = indexCssSource.match(new RegExp(`${escapeRegExp(selector)}\\s*\\{([\\s\\S]*?)\\n\\}`, 'm'));
   assert.ok(match, `Could not find CSS block for ${selector}`);
   return match[1];
+};
+
+const getRelativeLuminance = (color) => {
+  const { red, green, blue } = hexColorToRgb(color);
+  const normalizeChannel = (channel) => {
+    const normalized = channel / 255;
+    return normalized <= 0.03928 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+  };
+
+  return 0.2126 * normalizeChannel(red) + 0.7152 * normalizeChannel(green) + 0.0722 * normalizeChannel(blue);
+};
+
+const getContrastRatio = (left, right) => {
+  const leftLuminance = getRelativeLuminance(left);
+  const rightLuminance = getRelativeLuminance(right);
+  const brighter = Math.max(leftLuminance, rightLuminance);
+  const darker = Math.min(leftLuminance, rightLuminance);
+
+  return (brighter + 0.05) / (darker + 0.05);
+};
+
+const getRgbDistance = (left, right) => {
+  const leftRgb = hexColorToRgb(left);
+  const rightRgb = hexColorToRgb(right);
+  return Math.hypot(leftRgb.red - rightRgb.red, leftRgb.green - rightRgb.green, leftRgb.blue - rightRgb.blue);
+};
+
+const getMethodMetrics = (source) => {
+  const lines = source.split(/\n/);
+  const methods = [];
+  let current = null;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const match = line.match(/^  (?:private |public |protected )?(?:async )?([A-Za-z_][A-Za-z0-9_]*)\([^;]*\)\s*(?::[^\{]+)?\{$/);
+    if (!match) continue;
+    if (current) methods.push({ ...current, end: index, length: index - current.start + 1 });
+    current = { name: match[1], start: index + 1 };
+  }
+
+  if (current) methods.push({ ...current, end: lines.length, length: lines.length - current.start + 1 });
+
+  return { lines: lines.length, methods };
 };
 
 const makeBoard = () => ({
@@ -133,7 +196,7 @@ const makeBoard = () => ({
   ],
 });
 
-test('course color recommendations keep the current choice visible and surface analyzed lecture colors first', () => {
+test('course color recommendations keep analyzed lecture colors ordered ahead of the active swatch when the swatch was already recommended', () => {
   const board = makeBoard();
 
   assert.deepEqual(
@@ -142,7 +205,25 @@ test('course color recommendations keep the current choice visible and surface a
       selectedColor: '#7c72ff',
       limit: 6,
     }),
-    ['#7c72ff', '#4cc9f0', '#ff7aa2', '#ffb84c', '#7ddc8b', '#d69bff'],
+    ['#4cc9f0', '#ff7aa2', '#7c72ff', '#ffb84c', '#7ddc8b', '#d69bff'],
+  );
+});
+
+
+test('course color recommendations keep a tapped recommended swatch in its existing grid slot', () => {
+  const board = makeBoard();
+  const baselineRecommendations = getCourseColorRecommendations(board.courses, {
+    currentCourseId: 'course-a',
+    limit: 6,
+  });
+
+  assert.deepEqual(
+    getCourseColorRecommendations(board.courses, {
+      currentCourseId: 'course-a',
+      selectedColor: '#ff7aa2',
+      limit: 6,
+    }),
+    baselineRecommendations,
   );
 });
 
@@ -168,7 +249,7 @@ test('course color recommendations surface observed custom colors before falling
         limit: 4,
       },
     ),
-    ['#ffb84c', '#123456', '#abcdef', '#7c72ff'],
+    ['#123456', '#abcdef', '#7c72ff', '#ffb84c'],
   );
 });
 
@@ -176,6 +257,24 @@ test('course color helpers normalize hex colors and clamp RGB values', () => {
   assert.equal(sanitizeCourseColor('#ABC'), '#aabbcc');
   assert.deepEqual(hexColorToRgb('#4cc9f0'), { red: 76, green: 201, blue: 240 });
   assert.equal(rgbToHexColor({ red: 300, green: -12, blue: 128.4 }), '#ff0080');
+});
+
+test('random course color generation stays readable and avoids nearby existing swatches', () => {
+  const originalRandom = Math.random;
+  const sequence = [0.03, 0.78, 0.24];
+  Math.random = () => sequence.shift() ?? 0.5;
+
+  try {
+    const excludedColors = ['#7c72ff', '#4cc9f0', '#6f4cff'];
+    const randomColor = generateRandomCourseColor({ excludeColors: excludedColors });
+    assert.match(randomColor, /^#[0-9a-f]{6}$/);
+    assert.ok(getContrastRatio(randomColor, '#ffffff') >= 3.6, `expected readable contrast, got ${randomColor}`);
+    excludedColors.forEach((color) => {
+      assert.ok(getRgbDistance(randomColor, color) >= 96, `expected ${randomColor} to stay distinct from ${color}`);
+    });
+  } finally {
+    Math.random = originalRandom;
+  }
 });
 
 test('weekday constants remove Saturday across the app surface', () => {
@@ -770,9 +869,9 @@ test('session time widget keeps meridiem changes inside the hour-minute flow', (
 });
 
 test('session time popover relies on the option-button flow without duplicate hour-minute trigger controls', () => {
-  assert.match(rendererAppSource, /renderSessionTimeMeridiemButtons\(meridiem, meridiemOptions\)/);
-  assert.match(rendererAppSource, /const selectionSummary = `\$\{SESSION_TIME_MERIDIEM_LABELS\[meridiem\]\} \$\{Number\(hour\)\}시 \$\{minute\}분`;/);
-  assert.match(rendererAppSource, /session-time-select-menu-summary/);
+  assert.match(rendererSupportSource, /renderSessionTimeMeridiemButtons\(meridiem, meridiemOptions\)/);
+  assert.match(rendererSupportSource, /const selectionSummary = `\$\{SESSION_TIME_MERIDIEM_LABELS\[meridiem\]\} \$\{Number\(hour\)\}시 \$\{minute\}분`;/);
+  assert.match(rendererSource, /session-time-select-menu-summary/);
   assert.doesNotMatch(rendererAppSource, /renderSessionTimeSelectTrigger/);
   assert.doesNotMatch(rendererAppSource, /data-session-time-select-trigger/);
   assert.doesNotMatch(rendererAppSource, /session-time-select-row/);
@@ -787,50 +886,53 @@ test('session time trigger stacks the selected time above the action label', () 
 
 test('session rows keep button-based time widgets outside label wrappers', () => {
   assert.match(
-    rendererAppSource,
+    rendererSupportSource,
     /const resolvedStartValue = coerceTimeToOptions\(session\.start, SESSION_START_TIME_OPTIONS\);/,
   );
   assert.match(
-    rendererAppSource,
+    rendererSupportSource,
     /const resolvedEndValue = coerceTimeToOptions\(session\.end, getSessionEndTimeOptionsAfterStart\(resolvedStartValue\)\);/,
   );
   assert.match(
-    rendererAppSource,
-    /<div class="form-field">\s*<span>시작<\/span>\s*\$\{this\.renderSessionTimeInput\(session\.id, 'session-start', resolvedStartValue, resolvedEndValue\)\}/,
+    rendererSupportSource,
+    /<div class="form-field">\s*<span>시작<\/span>\s*\$\{renderSessionTimeInput\(session\.id, 'session-start', resolvedStartValue, resolvedEndValue\)\}/,
   );
   assert.match(
-    rendererAppSource,
-    /<div class="form-field">\s*<span>종료<\/span>\s*\$\{this\.renderSessionTimeInput\(session\.id, 'session-end', resolvedEndValue, resolvedStartValue\)\}/,
+    rendererSupportSource,
+    /<div class="form-field">\s*<span>종료<\/span>\s*\$\{renderSessionTimeInput\(session\.id, 'session-end', resolvedEndValue, resolvedStartValue\)\}/,
   );
   assert.doesNotMatch(
-    rendererAppSource,
+    rendererSupportSource,
     /<label>\s*<span>시작<\/span>\s*\$\{this\.renderSessionTimeInput\(session\.id, 'session-start', resolvedStartValue, resolvedEndValue\)\}/,
   );
   assert.doesNotMatch(
-    rendererAppSource,
+    rendererSupportSource,
     /<label>\s*<span>종료<\/span>\s*\$\{this\.renderSessionTimeInput\(session\.id, 'session-end', resolvedEndValue, resolvedStartValue\)\}/,
   );
 });
 
 test('current-time timetable indicator uses retained DOM anchors and a dedicated sync ticker', () => {
-  assert.doesNotMatch(rendererAppSource, /getCurrentTimeSlotHighlight/);
-  assert.doesNotMatch(rendererAppSource, /current-time-slot/);
-  assert.match(rendererAppSource, /data-day-head="\$\{day\}"/);
-  assert.match(rendererAppSource, /data-day-column="\$\{day\}"/);
-  assert.match(rendererAppSource, /const dayColumns = \[\.\.\.this\.root\.querySelectorAll<HTMLElement>\('\[data-day-column\]'\)\];/);
-  assert.match(rendererAppSource, /const indicator = this\.root\.querySelector<HTMLElement>\('\[data-current-time-indicator\]'\);/);
-  assert.match(rendererAppSource, /indicator\.style\.left = `\$\{dayColumn\.offsetLeft\}px`;/);
-  assert.match(rendererAppSource, /indicator\.style\.width = `\$\{dayColumn\.offsetWidth\}px`;/);
-  assert.doesNotMatch(rendererAppSource, /axisLabel/);
-  assert.match(rendererAppSource, /if \(!dayColumn\) \{/);
-  assert.match(rendererAppSource, /<div class="timetable-current-time-indicator" data-current-time-indicator hidden aria-hidden="true">/);
-  assert.match(rendererAppSource, /private startCurrentTimeTicker\(\): void/);
-  assert.match(rendererAppSource, /private syncCurrentTimeIndicator\(now = new Date\(\)\): void/);
-  assert.match(rendererAppSource, /const indicatorState = getCurrentTimeIndicatorState\(range, now\);/);
-  assert.match(
-    rendererAppSource,
-    /this\.currentTimeTicker = window\.setTimeout\(\(\) => \{\s*this\.currentTimeTicker = null;\s*this\.syncCurrentTimeIndicator\(\);\s*this\.queueCurrentTimeIndicatorTick\(\);/m,
-  );
+  assert.doesNotMatch(rendererSource, /getCurrentTimeSlotHighlight/);
+  assert.doesNotMatch(rendererSource, /current-time-slot/);
+  assert.match(rendererSource, /data-day-head="\$\{day\}"/);
+  assert.match(rendererSource, /data-day-column="\$\{day\}"/);
+  assert.match(rendererSupportSource, /const dayColumns = \[\.\.\.app\.root\.querySelectorAll<HTMLElement>\('\[data-day-column\]'\)\];|const dayColumns = \[\.\.\.this\.root\.querySelectorAll<HTMLElement>\('\[data-day-column\]'\)\];/);
+  assert.match(rendererSupportSource, /const indicator = app\.root\.querySelector<HTMLElement>\('\[data-current-time-indicator\]'\);|const indicator = this\.root\.querySelector<HTMLElement>\('\[data-current-time-indicator\]'\);/);
+  assert.match(rendererSupportSource, /indicator\.style\.left = `\$\{dayColumn\.offsetLeft\}px`;/);
+  assert.match(rendererSupportSource, /indicator\.style\.width = `\$\{dayColumn\.offsetWidth\}px`;/);
+  assert.doesNotMatch(rendererSource, /axisLabel/);
+  assert.match(rendererSupportSource, /if \(!dayColumn\) \{/);
+  assert.match(rendererSource, /<div class="timetable-current-time-indicator" data-current-time-indicator hidden aria-hidden="true">/);
+  assert.match(rendererSupportSource, /startCurrentTimeTicker\(this: SoostaApp\): void|startCurrentTimeTicker\(\): void/);
+  assert.match(rendererSupportSource, /syncCurrentTimeUi\((?:this: SoostaApp, )?now = new Date\(\)\): void|export const syncCurrentTimeUi = \(app: SoostaApp, now = new Date\(\)\): void/);
+  assert.match(rendererSupportSource, /syncCurrentTimeIndicator\((?:this: SoostaApp, )?now = new Date\(\)\): void/);
+  assert.match(rendererSupportSource, /const agendaPanel = app\.root\.querySelector<HTMLElement>\('\[data-agenda-panel\]'\);/);
+  assert.match(rendererSupportSource, /agendaPanel\.outerHTML = renderAgendaSection\(\{/);
+  assert.match(rendererSupportSource, /const indicatorState = getCurrentTimeIndicatorState\(range, now\);/);
+  assert.match(rendererSupportSource, /currentTimeTicker = window\.setTimeout\(\(\) => \{\s*(?:app|this)\.currentTimeTicker = null;\s*syncCurrentTimeUi(?:FromModule)?\((?:app|this)|(?:app|this)\.syncCurrentTimeUi\(\);[\s\S]*queueCurrentTimeIndicatorTick/);
+  assert.match(rendererSupportSource, /window\.addEventListener\('focus', \(\) => \{\s*app\.syncCurrentTimeUi\(\);/);
+  assert.match(rendererSupportSource, /document\.addEventListener\('visibilitychange', \(\) => \{\s*if \(document\.visibilityState === 'visible'\) \{\s*app\.syncCurrentTimeUi\(\);/);
+  assert.match(rendererSource, /<section class="panel-card agenda-panel" data-agenda-panel>/);
   assert.match(indexCssSource, /\.timetable-body\s*\{\s*position: relative;/);
   assert.doesNotMatch(indexCssSource, /\.timetable-current-time-axis\s*\{/);
   assert.match(indexCssSource, /\.timetable-current-time-indicator\s*\{[\s\S]*left: 0;[\s\S]*width: 0;[\s\S]*pointer-events: none;[\s\S]*z-index: 3;/);
@@ -839,45 +941,61 @@ test('current-time timetable indicator uses retained DOM anchors and a dedicated
   assert.match(indexCssSource, /\.timetable-current-time-indicator\[hidden\]\s*\{\s*display: none;/);
   assert.match(indexCssSource, /\.day-head\.is-current-time-day span\s*\{/);
   assert.doesNotMatch(indexCssSource, /\.day-column\.is-current-time-day\s*\{/);
-  assert.doesNotMatch(rendererAppSource, /dayColumn\.classList\.add\('is-current-time-day'\)/);
+  assert.doesNotMatch(rendererSource, /dayColumn\.classList\.add\('is-current-time-day'\)/);
 });
 
 test('current-time indicator re-syncs during content-column resize so editor panel toggles do not leave the bar drifting', () => {
-  assert.match(rendererAppSource, /private currentTimeIndicatorSyncFrame: number \| null = null;/);
-  assert.match(rendererAppSource, /private layoutResizeObserver: ResizeObserver \| null = null;/);
+  assert.match(rendererAppSource, /currentTimeIndicatorSyncFrame: number \| null = null;/);
+  assert.match(rendererAppSource, /layoutResizeObserver: ResizeObserver \| null = null;/);
   assert.match(rendererAppSource, /this\.bindLayoutResizeObserver\(\);/);
   assert.match(rendererAppSource, /private bindLayoutResizeObserver\(\): void \{/);
-  assert.match(
-    rendererAppSource,
-    /this\.layoutResizeObserver = new ResizeObserver\(\(\) => \{\s*this\.queueCurrentTimeIndicatorSync\(\);\s*}\);/m,
-  );
+  assert.match(rendererAppSource, /this\.layoutResizeObserver = new ResizeObserver\(\(\) => \{\s*this\.queueCurrentTimeIndicatorSync\(\);\s*}\);/m);
   assert.match(rendererAppSource, /this\.layoutResizeObserver\.observe\(contentSlot\);/);
-  assert.match(rendererAppSource, /private queueCurrentTimeIndicatorSync\(\): void \{/);
-  assert.match(
-    rendererAppSource,
-    /this\.currentTimeIndicatorSyncFrame = window\.requestAnimationFrame\(\(\) => \{\s*this\.currentTimeIndicatorSyncFrame = null;\s*this\.syncCurrentTimeIndicator\(\);/m,
-  );
-  assert.match(rendererAppSource, /this\.layoutResizeObserver\?\.disconnect\(\);/);
-  assert.match(rendererAppSource, /this\.cancelQueuedCurrentTimeIndicatorSync\(\);/);
+  assert.match(rendererSupportSource, /queueCurrentTimeIndicatorSync\(this: SoostaApp\): void|queueCurrentTimeIndicatorSync\(\): void/);
+  assert.match(rendererSupportSource, /currentTimeIndicatorSyncFrame = window\.requestAnimationFrame\(\(\) => \{/);
+  assert.match(rendererSupportSource, /currentTimeIndicatorSyncFrame = null;/);
+  assert.match(rendererSupportSource, /syncCurrentTimeIndicator(?:FromModule)?\(app(?:, now)?\)|this\.syncCurrentTimeIndicator\(\)/);
+  assert.match(rendererSource, /this\.layoutResizeObserver\?\.disconnect\(\);/);
+  assert.match(rendererSource, /cancelQueuedCurrentTimeIndicatorSync(?:FromModule)?\(this\)|this\.cancelQueuedCurrentTimeIndicatorSync\(\);/);
+});
+
+test('today agenda domain tracks ongoing and next lectures across minute and day changes', () => {
+  const board = makeBoard();
+  const earlyAgenda = getTodayAgenda(board, new Date('2026-03-09T09:15:00'));
+  assert.equal(earlyAgenda.length, 3);
+  assert.equal(earlyAgenda[0].title, '자료구조');
+  assert.equal(earlyAgenda[0].isOngoing, true);
+  assert.equal(earlyAgenda[1].title, '컴퓨터그래픽스');
+  assert.equal(earlyAgenda[1].isNext, true);
+
+  const midAgenda = getTodayAgenda(board, new Date('2026-03-09T10:05:00'));
+  assert.equal(midAgenda[0].title, '자료구조');
+  assert.equal(midAgenda[0].isOngoing, false);
+  assert.equal(midAgenda[1].title, '컴퓨터그래픽스');
+  assert.equal(midAgenda[1].isOngoing, true);
+  assert.equal(midAgenda[2].title, '미디어연구');
+  assert.equal(midAgenda[2].isNext, true);
+
+  assert.deepEqual(getTodayAgenda(board, new Date('2026-03-10T09:45:00')), []);
 });
 
 test('hero header renders board name and semester inline instead of a stacked semester subtitle', () => {
-  assert.match(rendererAppSource, /<div class="hero-title-row">\s*<h2>\$\{escapeHtml\(board\.name\)\}<\/h2>\s*<span class="hero-title-meta">\$\{escapeHtml\(board\.semester\)\}<\/span>/m);
-  assert.match(rendererAppSource, /\$\{board\.note \? `<p class=\"hero-copy\">\$\{escapeHtml\(board\.note\)\}<\/p>` : ''\}/);
-  assert.doesNotMatch(rendererAppSource, /<p class="hero-copy">\$\{escapeHtml\(board\.semester\)\}\$\{board\.note \? ` · \$\{escapeHtml\(board\.note\)\}` : ' · 에디토리얼 톤의 데스크톱 시간표'\}<\/p>/);
+  assert.match(rendererSource, /<div class="hero-title-row">\s*<h2>\$\{escapeHtml\(board\.name\)\}<\/h2>\s*<span class="hero-title-meta">\$\{escapeHtml\(board\.semester\)\}<\/span>/m);
+  assert.match(rendererSource, /\$\{board\.note \? `<p class=\"hero-copy\">\$\{escapeHtml\(board\.note\)\}<\/p>` : ''\}/);
+  assert.doesNotMatch(rendererSource, /<p class="hero-copy">\$\{escapeHtml\(board\.semester\)\}\$\{board\.note \? ` · \$\{escapeHtml\(board\.note\)\}` : ' · 에디토리얼 톤의 데스크톱 시간표'\}<\/p>/);
   assert.match(indexCssSource, /\.hero-title-row\s*\{[\s\S]*display: inline-flex;[\s\S]*align-items: baseline;[\s\S]*flex-wrap: wrap;/);
   assert.match(indexCssSource, /\.hero-title-meta\s*\{[\s\S]*font-size: 14px;[\s\S]*font-weight: 600;[\s\S]*white-space: nowrap;/);
 });
 
 test('sidebar drops the separate next schedule card and keeps reminder controls alongside today agenda markers', () => {
-  assert.doesNotMatch(rendererAppSource, /<p class="eyebrow">/);
-  assert.doesNotMatch(rendererAppSource, /<h2>다음 일정<\/h2>/);
-  assert.match(rendererAppSource, /<h2>강의 알림<\/h2>/);
+  assert.doesNotMatch(rendererSource, /<p class="eyebrow">/);
+  assert.doesNotMatch(rendererSource, /<h2>다음 일정<\/h2>/);
+  assert.match(rendererSource, /<h2>강의 알림<\/h2>/);
   assert.match(rendererAppSource, /item\.isNext \? '<span class="agenda-state">다음 수업<\/span>' : ''/);
   assert.doesNotMatch(rendererAppSource, /private renderNextSession\(/);
-  assert.doesNotMatch(rendererAppSource, /테스트 버튼은 설정과 관계없이 팝업·네이티브 알림·소리를 1회 바로 띄워줍니다\./);
+  assert.doesNotMatch(rendererSource, /테스트 버튼은 설정과 관계없이 팝업·네이티브 알림·소리를 1회 바로 띄워줍니다\./);
   assert.doesNotMatch(indexCssSource, /\.reminder-settings-footnote\s*\{/);
-  assert.doesNotMatch(rendererAppSource, />다음 움직임</);
+  assert.doesNotMatch(rendererSource, />다음 움직임</);
   assert.doesNotMatch(indexCssSource, /\.eyebrow\s*\{/);
 });
 
@@ -931,10 +1049,11 @@ test('course color field styles support a collapsible recommendation and RGB con
   assert.match(indexCssSource, /\.color-field-toggle\[aria-expanded='true'\] \.color-field-toggle-icon\s*\{[\s\S]*transform: rotate\(180deg\);/);
   assert.match(getCssBlock('.color-field'), /flex-direction: column;/);
   assert.match(indexCssSource, /\.color-field\[hidden\]\s*\{\s*display: none;/);
+  assert.match(getCssBlock('.color-randomize-button'), /width: 44px;/);
+  assert.match(getCssBlock('.color-randomize-button'), /height: 44px;/);
   assert.match(getCssBlock('.color-swatch-grid'), /grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
   assert.match(getCssBlock('.color-rgb-grid'), /grid-template-columns: repeat\(3, minmax\(0, 1fr\)\);/);
   assert.match(getCssBlock('.color-swatch-button.is-active'), /background: rgba\(110, 103, 255, 0\.08\);/);
-  assert.match(getCssBlock('.color-preview-card'), /background: rgba\(255, 255, 255, 0\.78\);/);
 });
 
 test('app shell and packaged resources share logo/logo.png as the logo asset', () => {
@@ -999,15 +1118,12 @@ test('timetable footer legend is removed so the grid can use the freed vertical 
 });
 
 test('renderer keeps the weekday timetable readable while preventing horizontal scroll on narrow widths', () => {
-  assert.doesNotMatch(rendererAppSource, /syncTimetablePixelsPerMinuteFit/);
-  assert.match(
-    rendererAppSource,
-    /private getTimetablePixelsPerMinute\(\): number \{\s*return this\.timetableFitPixelsPerMinute \?\? getTimetablePixelsPerMinute\(this\.viewportHeight \|\| this\.getViewportHeight\(\)\);\s*\}/,
-  );
+  assert.doesNotMatch(rendererSource, /syncTimetablePixelsPerMinuteFit/);
+  assert.match(rendererSource, /getTimetablePixelsPerMinute\(\): number \{\s*return this\.timetableFitPixelsPerMinute \?\? getTimetablePixelsPerMinute\(this\.viewportHeight \|\| this\.getViewportHeight\(\)\);\s*\}/);
   assert.match(getCssBlock(".app-shell[data-viewport-height-band='short']"), /--main-plan-max-height: min\(920px, calc\(100dvh - 184px\)\);/);
   assert.match(indexCssSource, /\.timetable-scroll\s*\{[\s\S]*overflow-y: auto;[\s\S]*overflow-x: hidden;/);
   assert.match(indexCssSource, /\.timetable-grid\s*\{[\s\S]*width:\s*100%;/);
-  assert.match(rendererAppSource, /private renderTimetable\([\s\S]*TIMETABLE_DAY_ORDER\.map\(/);
+  assert.match(rendererAppSource, /TIMETABLE_DAY_ORDER\.map\(/);
   assert.match(
     indexCssSource,
     /\.timetable-head,\s*\.timetable-body\s*\{[\s\S]*grid-template-columns:\s*var\(--time-axis-width\) repeat\(5, minmax\(0, 1fr\)\);/,
@@ -1015,29 +1131,29 @@ test('renderer keeps the weekday timetable readable while preventing horizontal 
 });
 
 test('renderer exposes a timetable fit toggle that recalculates the visible timetable height and restores the default scale', () => {
-  assert.match(rendererAppSource, /data-action="toggle-timetable-fit"/);
-  assert.match(rendererAppSource, /aria-pressed="\$\{this\.isTimetableFitMode \? 'true' : 'false'\}"/);
+  assert.match(rendererSource, /data-action="toggle-timetable-fit"/);
+  assert.match(rendererSource, /aria-pressed="\$\{(?:this\.)?isTimetableFitMode \? 'true' : 'false'\}"/);
   assert.match(rendererAppSource, /private measureFittedTimetablePixelsPerMinute\(\): number \| null/);
   assert.match(rendererAppSource, /private syncTimetableFitMode\(preserveFocus = false\): void/);
   assert.match(rendererAppSource, /private toggleTimetableFitMode\(\): void/);
   assert.match(rendererAppSource, /this\.queueTimetableFitSync\(preserveFocus\);/);
   assert.match(rendererAppSource, /this\.timetableFitPixelsPerMinute \?\? getTimetablePixelsPerMinute\(this\.viewportHeight \|\| this\.getViewportHeight\(\)\)/);
-  assert.match(rendererAppSource, /case 'toggle-timetable-fit':[\s\S]*this\.toggleTimetableFitMode\(\);/);
+  assert.match(rendererSupportSource, /case 'toggle-timetable-fit':[\s\S]*toggleTimetableFitMode\(\);/);
   assert.match(indexCssSource, /\.hero-actions\s*\{[\s\S]*justify-content: flex-end;/);
   assert.match(indexCssSource, /\.timetable-fit-button\s*\{[\s\S]*white-space: nowrap;/);
 });
 
 test('renderer exposes a JPG export action for the timetable card', () => {
-  assert.match(rendererAppSource, /data-action="export-timetable-jpg"/);
-  assert.match(rendererAppSource, /\$\{renderIcon\('image'\)\}\s*\$\{this\.isTimetableJpegExporting \? 'JPG 저장 중…' : 'JPG 다운로드'\}/);
-  assert.match(rendererAppSource, /image: '<rect x="3" y="5" width="18" height="14" rx="2" \/><circle cx="9" cy="10" r="1\.5" \/><path d="m21 16-5\.5-5\.5L8 18" \/>'/);
-  assert.match(rendererAppSource, /JPG 다운로드/);
-  assert.match(rendererAppSource, /JPG 저장 중…/);
-  assert.match(rendererAppSource, /private async exportTimetableJpeg\(\): Promise<void>/);
+  assert.match(rendererSource, /data-action="export-timetable-jpg"/);
+  assert.match(rendererSource, /\$\{renderIcon\('image'\)\}\s*\$\{isTimetableJpegExporting \? 'JPG 저장 중…' : 'JPG 다운로드'\}/);
+  assert.match(rendererSource, /image: '<rect x="3" y="5" width="18" height="14" rx="2" \/><circle cx="9" cy="10" r="1\.5" \/><path d="m21 16-5\.5-5\.5L8 18" \/>'/);
+  assert.match(rendererSource, /JPG 다운로드/);
+  assert.match(rendererSource, /JPG 저장 중…/);
+  assert.match(rendererSource, /private async exportTimetableJpeg\(\): Promise<void>/);
   assert.match(rendererAppSource, /await renderTimetableToJpegBytes\(\{/);
   assert.match(rendererAppSource, /window\.soosta\.exportTimetableJpeg\(\{/);
   assert.match(rendererAppSource, /fileName: getTimetableJpegFileName\(board\.name\)/);
-  assert.match(rendererAppSource, /case 'export-timetable-jpg':[\s\S]*await this\.exportTimetableJpeg\(\);/);
+  assert.match(rendererSupportSource, /case 'export-timetable-jpg':[\s\S]*exportTimetableJpeg\(\);/);
   assert.match(indexCssSource, /\.hero-action-buttons\s*\{[\s\S]*display: inline-flex;/);
   assert.match(indexCssSource, /\.timetable-export-button,\s*[\s\S]*\.timetable-fit-button\s*\{/);
 });
@@ -1081,16 +1197,16 @@ test('initial renderer load still renders through renderFrame so layout state st
 });
 
 test('editor removes the representative location field and relabels the reset action', () => {
-  assert.doesNotMatch(rendererAppSource, /<span>대표 장소<\/span>/);
-  assert.match(rendererAppSource, /<input type="hidden" name="location" value="\$\{escapeHtml\(course\.location\)\}" \/>/);
-  assert.match(rendererAppSource, /data-action="new-course">\$\{renderIcon\('reset'\)\}초기화<\/button>/);
-  assert.match(rendererAppSource, /강의 입력 폼을 초기화했어요\./);
+  assert.doesNotMatch(rendererSource, /<span>대표 장소<\/span>/);
+  assert.match(rendererSource, /<input type="hidden" name="location" value="\$\{escapeHtml\(course\.location\)\}" \/>/);
+  assert.match(rendererSupportSource, /data-action="new-course">\$\{renderIcon\('reset'\)\}초기화<\/button>/);
+  assert.match(rendererSource, /강의 입력 폼을 초기화했어요\./);
 });
 
 test('editor close button stays dynamically centered without hover shift', () => {
-  assert.match(rendererAppSource, /class="inspector-close-button"/);
-  assert.match(rendererAppSource, /\$\{renderIcon\('collapse-right'\)\}/);
-  assert.match(rendererAppSource, /<\/form>\s*<button[\s\S]*class="inspector-close-button"/);
+  assert.match(rendererSource, /class="inspector-close-button"/);
+  assert.match(rendererSource, /\$\{renderIcon\('collapse-right'\)\}/);
+  assert.match(rendererSource, /<\/form>\s*<button[\s\S]*class="inspector-close-button"/);
   assert.match(rendererAppSource, /private syncInspectorCloseButtonPosition\(\): void/);
   assert.match(rendererAppSource, /if \(shell\?\.dataset\.layoutMode === 'inspector-below'\) \{\s*panel\.style\.removeProperty\('--inspector-close-button-top'\);\s*return;\s*\}/);
   assert.match(rendererAppSource, /panel\.style\.setProperty\('--inspector-close-button-top', `\$\{Math\.round\(nextTop\)\}px`\)/);
@@ -1136,30 +1252,60 @@ test('color input defers live input mutations so the native RGB picker stays ope
 });
 
 test('course editor renders a foldable color section with recommended color actions and RGB adjustment controls', () => {
-  assert.match(rendererAppSource, /private isCourseColorFieldExpanded = false;/);
-  assert.match(rendererAppSource, /case 'toggle-color-field':/);
-  assert.match(rendererAppSource, /'chevron-down': '<path d="m6 9 6 6 6-6" \/>',/);
-  assert.match(rendererAppSource, /data-action="toggle-color-field"/);
-  assert.match(rendererAppSource, /\$\{renderIcon\('chevron-down'\)\}/);
-  assert.match(rendererAppSource, /aria-controls="course-color-panel"/);
-  assert.match(rendererAppSource, /추천 색상과 RGB 미세 조정 펼치기/);
-  assert.match(rendererAppSource, /id="course-color-panel"/);
-  assert.match(rendererAppSource, /data-action="recommend-color"/);
-  assert.match(rendererAppSource, /input name="color" type="color"/);
-  assert.match(rendererAppSource, /data-color-control="rgb"/);
-  assert.match(rendererAppSource, /private syncCourseColorFieldDisclosure\(form: HTMLFormElement\): void/);
-  assert.match(rendererAppSource, /form\?\.id === 'course-form'/);
+  assert.match(rendererSource, /isCourseColorFieldExpanded = false;/);
+  assert.match(rendererSource, /case 'toggle-color-field':/);
+  assert.match(rendererSupportSource, /'chevron-down': '<path d="m6 9 6 6 6-6" \/>',/);
+  assert.match(rendererSupportSource, /data-action="toggle-color-field"/);
+  assert.match(rendererSupportSource, /\$\{renderIcon\('chevron-down'\)\}/);
+  assert.match(rendererSupportSource, /aria-controls="course-color-panel"/);
+  assert.match(rendererSupportSource, /추천 색상과 RGB 미세 조정 펼치기/);
+  assert.match(rendererSupportSource, /id="course-color-panel"/);
+  assert.match(rendererSupportSource, /data-action="recommend-color"/);
+  assert.match(rendererSupportSource, /data-action="randomize-color"/);
+  assert.match(rendererSupportSource, /aria-label="랜덤 색상 선택"/);
+  assert.match(rendererSupportSource, /title="랜덤 색상"/);
+  assert.match(rendererSupportSource, /class="color-picker-row"[\s\S]*input name="color"[\s\S]*class="color-randomize-button"/);
+  assert.doesNotMatch(rendererSupportSource, /class="color-picker-row"[\s\S]*?data-color-preview-hex/);
+  assert.doesNotMatch(rendererSupportSource, /class="color-picker-row"[\s\S]*?data-color-preview-rgb/);
+  assert.doesNotMatch(rendererSupportSource, /class="color-picker-row"[\s\S]*?data-color-preview-swatch/);
+  assert.match(rendererSupportSource, /excludeColors:\s*\[\s*\.\.\.\(currentColor \? \[currentColor\] : \[\]\),\s*\.\.\.app\.getActiveBoard\(\)\.courses\.map\(\(course\) => course\.color\),\s*\]/);
+  assert.match(rendererSupportSource, /input name="color" type="color"/);
+  assert.match(rendererSupportSource, /data-color-control="rgb"/);
+  assert.match(rendererAppSource, /(?:private )?syncCourseColorFieldDisclosure\(form: HTMLFormElement\): void/);
+  assert.match(rendererSource, /form\?\.id === 'course-form'/);
   assert.match(rendererAppSource, /panel\.removeAttribute\('hidden'\);/);
   assert.match(rendererAppSource, /panel\.setAttribute\('hidden', ''\);/);
-  assert.match(rendererAppSource, /추천한 색을 시작점으로 잡고 수치를 직접 다듬을 수 있어요\./);
-  assert.match(rendererAppSource, /this\.isCourseColorFieldExpanded = !this\.isCourseColorFieldExpanded;/);
+  assert.match(rendererSupportSource, /추천한 색을 시작점으로 잡고 수치를 직접 다듬을 수 있어요\./);
+  assert.match(rendererSupportSource, /isCourseColorFieldExpanded = !(?:app|this)\.isCourseColorFieldExpanded;/);
   assert.match(rendererAppSource, /querySelectorAll<HTMLElement>\('\[data-color-preview-swatch\]'\)/);
-  assert.match(rendererAppSource, /this\.syncCourseColorControls\(form, target, event\.type === 'change'\);/);
+  assert.match(rendererSupportSource, /syncCourseColorControls\(form, target, event\.type === 'change'\);/);
 });
 
 test('renderer syncs the end time forward when a later start time is committed', () => {
-  assert.match(rendererAppSource, /syncSessionEndTimeAfterStartChange\(widget\.sessionId, widget\.draftValue\)/);
-  assert.match(rendererAppSource, /getSessionTimeOptions\('session-end', startValue\)/);
+  assert.match(rendererSupportSource, /syncSessionEndTimeAfterStartChange\((?:app, )?widget\.sessionId, widget\.draftValue\)/);
+  assert.match(rendererSupportSource, /getSessionTimeOptions\('session-end', startValue\)/);
+});
+
+test('renderer app structural refactor stays within the agreed coordinator thresholds', () => {
+  const metrics = getMethodMetrics(rendererAppSource);
+  assert.ok(metrics.lines <= 3300, `expected app.ts to stay <= 3300 lines, got ${metrics.lines}`);
+  assert.ok(metrics.methods.length <= 110, `expected app.ts to stay <= 110 methods, got ${metrics.methods.length}`);
+  const bindEvents = metrics.methods.find((method) => method.name === 'bindEvents');
+  const handleAction = metrics.methods.find((method) => method.name === 'handleAction');
+  assert.ok(bindEvents && bindEvents.length < 120, `expected bindEvents < 120 lines, got ${bindEvents?.length}`);
+  assert.ok(handleAction && handleAction.length < 140, `expected handleAction < 140 lines, got ${handleAction?.length}`);
+  const oversized = metrics.methods.filter((method) => method.length > 200);
+  assert.equal(oversized.length, 0, `expected no app.ts method > 200 lines, got ${oversized.map((m) => `${m.name}:${m.length}`).join(', ')}`);
+});
+
+test('renderer coordinator delegates the largest render-only sections out of app.ts', () => {
+  assert.match(rendererAppSource, /return renderSidebarSection\(\{/);
+  assert.match(rendererAppSource, /return renderContentSection\(\{/);
+  assert.match(rendererAppSource, /return renderInspectorPanelSection\(\{/);
+  assert.match(rendererAppSource, /return renderCourseColorFieldSection\(\{/);
+  assert.match(rendererAppSource, /return renderSessionRowMarkup\(\{/);
+  assert.doesNotMatch(rendererAppSource, /<section class="panel-card board-panel">/);
+  assert.doesNotMatch(rendererAppSource, /<section class="panel-card hero-panel">/);
 });
 
 test('restoreActiveBoardFromPersisted removes a transient invalid new course draft', () => {
