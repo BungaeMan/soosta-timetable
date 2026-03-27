@@ -1,7 +1,7 @@
 {
   "name": "soosta-timetable",
   "productName": "Soosta Timetable",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Polished Electron desktop timetable manager for university students.",
   "main": ".webpack/main",
   "private": true,
