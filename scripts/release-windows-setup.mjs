@@ -136,7 +136,7 @@ const main = async () => {
 
   commitVersionBump(tagName);
   run('git', ['tag', tagName]);
-  run('git', ['push', 'origin', branch, '--follow-tags']);
+  run('git', ['push', 'origin', branch, tagName]);
 
   const workflowRunId = await getWorkflowRunId(tagName);
   run('gh', ['run', 'watch', workflowRunId, '--exit-status']);
