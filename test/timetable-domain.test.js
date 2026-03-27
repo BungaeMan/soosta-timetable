@@ -140,7 +140,7 @@ const getMethodMetrics = (source) => {
   let current = null;
 
   for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
+    const line = lines[index].replace(/\r$/, '');
     const match = line.match(/^  (?:private |public |protected )?(?:async )?([A-Za-z_][A-Za-z0-9_]*)\([^;]*\)\s*(?::[^\{]+)?\{$/);
     if (!match) continue;
     if (current) methods.push({ ...current, end: index, length: index - current.start + 1 });
