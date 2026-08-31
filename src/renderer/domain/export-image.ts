@@ -15,9 +15,10 @@ const EXPORT_SESSION_INSET_X = 4;
 const EXPORT_SESSION_INSET_Y = 4;
 const EXPORT_TIME_LABEL_OFFSET_Y = 7;
 const EXPORT_TIME_LABEL_BOTTOM_PADDING = 19;
-const EXPORT_TARGET_GRID_HEIGHT = 1326;
-const EXPORT_MIN_PIXELS_PER_MINUTE = 1.6;
-const EXPORT_MAX_PIXELS_PER_MINUTE = 1.9;
+const EXPORT_TARGET_GRID_HEIGHT = 720;
+const EXPORT_MIN_GRID_HEIGHT = 420;
+const EXPORT_MIN_PIXELS_PER_MINUTE = 0.9;
+const EXPORT_MAX_PIXELS_PER_MINUTE = 1.1;
 const EXPORT_RANGE_CONTEXT_MINUTES = 60;
 const EXPORT_MINIMUM_RANGE_MINUTES = 360;
 const EXPORT_RENDER_SCALE = 2;
@@ -549,8 +550,8 @@ const drawGrid = (
 };
 
 const getSessionTextLayout = (blockHeight: number, blockWidth: number) => ({
-  titleLines: blockHeight >= 92 && blockWidth >= 82 ? 2 : 1,
-  showTime: blockHeight >= 64 && blockWidth >= 50,
+  titleLines: blockHeight >= 84 && blockWidth >= 82 ? 2 : 1,
+  showTime: blockHeight >= 55 && blockWidth >= 50,
   showLocation: blockHeight >= 104 && blockWidth >= 72,
   showConflictChip: blockHeight >= 132 && blockWidth >= 88,
 });
@@ -702,7 +703,7 @@ export const getTimetableJpegExportMetrics = (
   const pixelsPerMinute = Number(
     clamp(EXPORT_TARGET_GRID_HEIGHT / safeMinuteSpan, EXPORT_MIN_PIXELS_PER_MINUTE, EXPORT_MAX_PIXELS_PER_MINUTE).toFixed(4),
   );
-  const gridHeight = Math.max(900, Math.round(safeMinuteSpan * pixelsPerMinute));
+  const gridHeight = Math.max(EXPORT_MIN_GRID_HEIGHT, Math.round(safeMinuteSpan * pixelsPerMinute));
   const cardWidth =
     EXPORT_CARD_PADDING * 2 +
     EXPORT_TIME_AXIS_WIDTH +

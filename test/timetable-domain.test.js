@@ -1959,14 +1959,14 @@ test('getViewportFittedTimetablePixelsPerMinute derives a viewport-fitted scale 
   assert.equal(getViewportFittedTimetablePixelsPerMinute(624, 0), 1.24);
 });
 
-test('timetable JPG export uses a sharp mobile-first portrait canvas and sanitized filenames', () => {
+test('timetable JPG export uses a compact mobile-first portrait canvas and sanitized filenames', () => {
   assert.deepEqual(getTimetableJpegExportMetrics(780), {
     canvasWidth: 720,
-    canvasHeight: 1604,
+    canvasHeight: 998,
     cardWidth: 668,
-    cardHeight: 1548,
-    gridHeight: 1326,
-    pixelsPerMinute: 1.7,
+    cardHeight: 942,
+    gridHeight: 720,
+    pixelsPerMinute: 0.9231,
     dayColumnWidth: 108,
     dayColumnGap: 6,
     timeAxisWidth: 50,
@@ -1982,7 +1982,15 @@ test('timetable JPG export uses a sharp mobile-first portrait canvas and sanitiz
   });
   const mobileMetrics = getTimetableJpegExportMetrics(780);
   assert.equal(mobileMetrics.canvasWidth * mobileMetrics.renderScale, 1440);
-  assert.ok(mobileMetrics.canvasHeight / mobileMetrics.canvasWidth > 2);
+  assert.ok(mobileMetrics.canvasHeight / mobileMetrics.canvasWidth > 1.35);
+  assert.ok(mobileMetrics.canvasHeight / mobileMetrics.canvasWidth < 1.4);
+  assert.deepEqual(
+    {
+      gridHeight: getTimetableJpegExportMetrics(600).gridHeight,
+      pixelsPerMinute: getTimetableJpegExportMetrics(600).pixelsPerMinute,
+    },
+    { gridHeight: 660, pixelsPerMinute: 1.1 },
+  );
   assert.equal(getTimetableJpegFileName('2026-1 시간표 / 디자인', new Date('2026-03-17T00:00:00Z')), 'soosta-timetable-2026-1-시간표-디자인-2026-03-17.jpg');
   assert.equal(getTimetableJpegFileName('   ', new Date('2026-03-17T00:00:00Z')), 'soosta-timetable-timetable-2026-03-17.jpg');
 });
