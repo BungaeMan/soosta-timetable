@@ -12,7 +12,11 @@ import type {
   Unsubscribe,
 } from '../shared/types';
 import type { DesktopPlatform } from './domain/layout';
-import { getTimetableJpegFileName, renderTimetableToJpegBytes } from './domain/export-image';
+import {
+  getTimetableJpegExportRange,
+  getTimetableJpegFileName,
+  renderTimetableToJpegBytes,
+} from './domain/export-image';
 import {
   getPlatformControlRail,
   getPlatformControlRailSide,
@@ -520,8 +524,8 @@ export class SoostaApp {
     this.renderFrame(true);
 
     try {
-      const range = getGridRange(board);
       const positioned = getPositionedSessions(board).filter((session) => TIMETABLE_DAY_ORDER.includes(session.day));
+      const range = getTimetableJpegExportRange(positioned, getGridRange(board));
       const imageBytes = await renderTimetableToJpegBytes({
         board,
         positionedSessions: positioned,

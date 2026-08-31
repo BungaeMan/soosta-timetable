@@ -68,6 +68,7 @@ const {
   getViewportFittedTimetablePixelsPerMinute,
 } = require('../dist-test/renderer/domain/layout.js');
 const {
+  getTimetableJpegExportRange,
   getTimetableJpegExportMetrics,
   getTimetableJpegFileName,
 } = require('../dist-test/renderer/domain/export-image.js');
@@ -999,14 +1000,15 @@ test('sidebar drops the separate next schedule card and keeps reminder controls 
   assert.doesNotMatch(indexCssSource, /\.eyebrow\s*\{/);
 });
 
-test('renderer bundles Pretendard locally so the primary UI font stays consistent across installs', () => {
-  const bundledFontPath = path.join(__dirname, '..', 'src', 'assets', 'fonts', 'PretendardVariable.ttf');
-  const bundledLicensePath = path.join(__dirname, '..', 'src', 'assets', 'fonts', 'Pretendard-LICENSE.txt');
+test('renderer bundles SUIT Variable locally so the primary UI font stays consistent across installs', () => {
+  const bundledFontPath = path.join(__dirname, '..', 'src', 'assets', 'fonts', 'SUIT-Variable.woff2');
+  const bundledLicensePath = path.join(__dirname, '..', 'src', 'assets', 'fonts', 'SUIT-LICENSE.txt');
 
   assert.ok(fs.existsSync(bundledFontPath));
   assert.ok(fs.existsSync(bundledLicensePath));
-  assert.match(indexCssSource, /@font-face\s*\{[\s\S]*font-family:\s*'Soosta Pretendard';[\s\S]*url\('\.\/assets\/fonts\/PretendardVariable\.ttf'\)\s*format\('truetype'\);[\s\S]*font-weight:\s*45 920;[\s\S]*font-display:\s*swap;/);
-  assert.match(indexCssSource, /--font-stack:\s*'Soosta Pretendard',\s*'Pretendard Variable',\s*Pretendard,\s*'SUIT Variable',\s*SUIT,\s*Inter,\s*'SF Pro Display',\s*'Apple SD Gothic Neo',\s*system-ui,\s*sans-serif;/);
+  assert.match(indexCssSource, /@font-face\s*\{[\s\S]*font-family:\s*'Soosta SUIT';[\s\S]*url\('\.\/assets\/fonts\/SUIT-Variable\.woff2'\)\s*format\('woff2'\);[\s\S]*font-weight:\s*100 900;[\s\S]*font-display:\s*swap;/);
+  assert.match(indexCssSource, /--font-stack:\s*'Soosta SUIT',\s*'SUIT Variable',\s*SUIT,\s*'Apple SD Gothic Neo',\s*system-ui,\s*sans-serif;/);
+  assert.match(exportImageSource, /const EXPORT_FONT_STACK =\s*\n\s*"'Soosta SUIT', 'SUIT Variable', SUIT, 'Apple SD Gothic Neo', system-ui, sans-serif";/);
   assert.ok(webpackRulesSource.includes("test: /\\.(woff2?|ttf|otf|eot)$/i,"));
   assert.ok(webpackRulesSource.includes("type: 'asset/resource',"));
 });
@@ -1151,6 +1153,7 @@ test('renderer exposes a JPG export action for the timetable card', () => {
   assert.match(rendererSource, /JPG 저장 중…/);
   assert.match(rendererSource, /private async exportTimetableJpeg\(\): Promise<void>/);
   assert.match(rendererAppSource, /await renderTimetableToJpegBytes\(\{/);
+  assert.match(rendererAppSource, /const range = getTimetableJpegExportRange\(positioned, getGridRange\(board\)\);/);
   assert.match(rendererAppSource, /window\.soosta\.exportTimetableJpeg\(\{/);
   assert.match(rendererAppSource, /fileName: getTimetableJpegFileName\(board\.name\)/);
   assert.match(rendererSupportSource, /case 'export-timetable-jpg':[\s\S]*exportTimetableJpeg\(\);/);
@@ -1171,11 +1174,14 @@ test('main, preload, and shared types wire the JPG export IPC path', () => {
   assert.match(persistenceSource, /const resolvedFilePath = ensureFileExtension\(filePath, \['jpg', 'jpeg'\]\);/);
 });
 
-test('JPG export draws the semester inline with the board title and keeps session blocks fully opaque', () => {
+test('JPG export mirrors the app gradient cards and keeps session copy consistently light', () => {
   assert.match(exportImageSource, /const titleWidth = context\.measureText\(board\.name\)\.width;/);
   assert.match(exportImageSource, /context\.fillText\(board\.semester, contentX \+ titleWidth \+ 14, titleY \+ 10\);/);
-  assert.match(exportImageSource, /const fillColor = session\.isConflict \? theme\.danger : accent;/);
-  assert.doesNotMatch(exportImageSource, /withAlpha\(accent, 0\.16\)/);
+  assert.match(exportImageSource, /const blockGradient = createSessionBlockGradient\(context, x, y, height, fillColor\);/);
+  assert.match(exportImageSource, /fillRoundedRectWithShadow\([\s\S]*blockGradient,[\s\S]*withAlpha\(fillColor, 0\.18\)/);
+  assert.match(exportImageSource, /const titleColor = FALLBACK_LIGHT_TEXT_COLOR;/);
+  assert.match(exportImageSource, /const metaColor = 'rgba\(255, 255, 255, 0\.86\)';/);
+  assert.doesNotMatch(exportImageSource, /getContrastingTextColor/);
 });
 
 test('JPG export clamps the left time labels so the last hour does not overflow the grid', () => {
@@ -1953,29 +1959,51 @@ test('getViewportFittedTimetablePixelsPerMinute derives a viewport-fitted scale 
   assert.equal(getViewportFittedTimetablePixelsPerMinute(624, 0), 1.24);
 });
 
-test('timetable JPG export helpers return stable metrics and sanitized filenames', () => {
+test('timetable JPG export uses a sharp mobile-first portrait canvas and sanitized filenames', () => {
   assert.deepEqual(getTimetableJpegExportMetrics(780), {
-    canvasWidth: 1404,
-    canvasHeight: 1940,
-    cardWidth: 1292,
-    cardHeight: 1836,
-    gridHeight: 1560,
-    pixelsPerMinute: 2,
-    dayColumnWidth: 214,
-    dayColumnGap: 12,
-    timeAxisWidth: 90,
-    dayHeaderHeight: 76,
-    outerPaddingX: 56,
-    outerPaddingY: 52,
-    cardPadding: 36,
-    metaHeight: 102,
-    timetableTopGap: 26,
-    sessionInsetX: 6,
+    canvasWidth: 720,
+    canvasHeight: 1604,
+    cardWidth: 668,
+    cardHeight: 1548,
+    gridHeight: 1326,
+    pixelsPerMinute: 1.7,
+    dayColumnWidth: 108,
+    dayColumnGap: 6,
+    timeAxisWidth: 50,
+    dayHeaderHeight: 60,
+    outerPaddingX: 26,
+    outerPaddingY: 28,
+    cardPadding: 24,
+    metaHeight: 96,
+    timetableTopGap: 18,
+    sessionInsetX: 4,
     sessionInsetY: 4,
     renderScale: 2,
   });
+  const mobileMetrics = getTimetableJpegExportMetrics(780);
+  assert.equal(mobileMetrics.canvasWidth * mobileMetrics.renderScale, 1440);
+  assert.ok(mobileMetrics.canvasHeight / mobileMetrics.canvasWidth > 2);
   assert.equal(getTimetableJpegFileName('2026-1 시간표 / 디자인', new Date('2026-03-17T00:00:00Z')), 'soosta-timetable-2026-1-시간표-디자인-2026-03-17.jpg');
   assert.equal(getTimetableJpegFileName('   ', new Date('2026-03-17T00:00:00Z')), 'soosta-timetable-timetable-2026-03-17.jpg');
+});
+
+test('timetable JPG export trims unused hours while preserving context and a useful minimum span', () => {
+  const bounds = { startMinutes: 540, endMinutes: 1320 };
+  assert.deepEqual(
+    getTimetableJpegExportRange(
+      [
+        { startMinutes: 600, endMinutes: 690 },
+        { startMinutes: 780, endMinutes: 1050 },
+      ],
+      bounds,
+    ),
+    { startMinutes: 540, endMinutes: 1140 },
+  );
+  assert.deepEqual(getTimetableJpegExportRange([{ startMinutes: 1260, endMinutes: 1320 }], bounds), {
+    startMinutes: 960,
+    endMinutes: 1320,
+  });
+  assert.deepEqual(getTimetableJpegExportRange([], bounds), bounds);
 });
 
 test('platform control rails follow desktop conventions', () => {

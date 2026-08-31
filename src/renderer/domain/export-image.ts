@@ -2,34 +2,38 @@ import { DAY_LABELS, TIMETABLE_DAY_ORDER } from '../../shared/constants';
 import type { PositionedSession, TimetableBoard } from '../../shared/types';
 import { minutesToTime } from './time';
 
-const EXPORT_CARD_PADDING = 36;
-const EXPORT_OUTER_PADDING_X = 56;
-const EXPORT_OUTER_PADDING_Y = 52;
-const EXPORT_META_HEIGHT = 102;
-const EXPORT_TIMETABLE_TOP_GAP = 26;
-const EXPORT_DAY_HEADER_HEIGHT = 76;
-const EXPORT_TIME_AXIS_WIDTH = 90;
-const EXPORT_DAY_COLUMN_WIDTH = 214;
-const EXPORT_DAY_COLUMN_GAP = 12;
-const EXPORT_SESSION_INSET_X = 6;
+const EXPORT_CARD_PADDING = 24;
+const EXPORT_OUTER_PADDING_X = 26;
+const EXPORT_OUTER_PADDING_Y = 28;
+const EXPORT_META_HEIGHT = 96;
+const EXPORT_TIMETABLE_TOP_GAP = 18;
+const EXPORT_DAY_HEADER_HEIGHT = 60;
+const EXPORT_TIME_AXIS_WIDTH = 50;
+const EXPORT_DAY_COLUMN_WIDTH = 108;
+const EXPORT_DAY_COLUMN_GAP = 6;
+const EXPORT_SESSION_INSET_X = 4;
 const EXPORT_SESSION_INSET_Y = 4;
-const EXPORT_TIME_LABEL_OFFSET_Y = 8;
-const EXPORT_TIME_LABEL_BOTTOM_PADDING = 22;
-const EXPORT_TARGET_GRID_HEIGHT = 1560;
-const EXPORT_MIN_PIXELS_PER_MINUTE = 1.52;
-const EXPORT_MAX_PIXELS_PER_MINUTE = 2.18;
+const EXPORT_TIME_LABEL_OFFSET_Y = 7;
+const EXPORT_TIME_LABEL_BOTTOM_PADDING = 19;
+const EXPORT_TARGET_GRID_HEIGHT = 1326;
+const EXPORT_MIN_PIXELS_PER_MINUTE = 1.6;
+const EXPORT_MAX_PIXELS_PER_MINUTE = 1.9;
+const EXPORT_RANGE_CONTEXT_MINUTES = 60;
+const EXPORT_MINIMUM_RANGE_MINUTES = 360;
 const EXPORT_RENDER_SCALE = 2;
-const EXPORT_JPEG_QUALITY = 0.94;
+const EXPORT_JPEG_QUALITY = 0.96;
 const EXPORT_FONT_STACK =
-  "'Soosta Pretendard', 'Pretendard Variable', Pretendard, 'SUIT Variable', SUIT, Inter, 'Apple SD Gothic Neo', system-ui, sans-serif";
+  "'Soosta SUIT', 'SUIT Variable', SUIT, 'Apple SD Gothic Neo', system-ui, sans-serif";
 const FALLBACK_TEXT_COLOR = '#172033';
 const FALLBACK_LIGHT_TEXT_COLOR = '#ffffff';
 const FALLBACK_SUBTLE_TEXT_COLOR = 'rgba(23, 32, 51, 0.72)';
+const FALLBACK_TERTIARY_TEXT_COLOR = 'rgba(23, 32, 51, 0.48)';
 const FALLBACK_BACKGROUND_COLOR = '#eff4ff';
 const FALLBACK_SURFACE_COLOR = 'rgba(255, 255, 255, 0.96)';
 const FALLBACK_SURFACE_SOFT_COLOR = 'rgba(98, 111, 155, 0.08)';
 const FALLBACK_STROKE_COLOR = 'rgba(59, 72, 108, 0.12)';
 const FALLBACK_STROKE_STRONG_COLOR = 'rgba(59, 72, 108, 0.2)';
+const FALLBACK_GRID_LINE_COLOR = 'rgba(59, 72, 108, 0.08)';
 const FALLBACK_ACCENT_COLOR = '#6e67ff';
 const FALLBACK_ACCENT_SOFT_COLOR = 'rgba(110, 103, 255, 0.14)';
 const FALLBACK_DANGER_COLOR = '#db5e7a';
@@ -45,11 +49,21 @@ interface CanvasTextMetricsLike {
   width: number;
 }
 
+interface CanvasGradientLike {
+  addColorStop: (offset: number, color: string) => void;
+}
+
+type CanvasPaintLike = string | CanvasGradientLike;
+
 interface CanvasContextLike {
-  fillStyle: string;
+  fillStyle: CanvasPaintLike;
   strokeStyle: string;
   lineWidth: number;
   font: string;
+  shadowBlur: number;
+  shadowColor: string;
+  shadowOffsetX: number;
+  shadowOffsetY: number;
   textBaseline: CanvasTextBaselineLike;
   beginPath: () => void;
   moveTo: (x: number, y: number) => void;
@@ -61,6 +75,7 @@ interface CanvasContextLike {
   fillRect: (x: number, y: number, width: number, height: number) => void;
   fillText: (text: string, x: number, y: number) => void;
   measureText: (text: string) => CanvasTextMetricsLike;
+  createLinearGradient: (x0: number, y0: number, x1: number, y1: number) => CanvasGradientLike;
   save: () => void;
   restore: () => void;
   scale: (x: number, y: number) => void;
@@ -80,6 +95,9 @@ interface RendererDomLike {
   document?: {
     documentElement: unknown;
     createElement: (tagName: string) => CanvasElementLike;
+    fonts?: {
+      load: (font: string, text?: string) => Promise<unknown>;
+    };
   };
 }
 
@@ -124,6 +142,7 @@ interface TimetableExportTheme {
   strokeStrong: string;
   text: string;
   textSecondary: string;
+  textTertiary: string;
   accent: string;
   accentSoft: string;
   danger: string;
@@ -175,11 +194,32 @@ const fillRoundedRect = (
   width: number,
   height: number,
   radius: number,
-  fillStyle: string,
+  fillStyle: CanvasPaintLike,
 ): void => {
   traceRoundedRect(context, x, y, width, height, radius);
   context.fillStyle = fillStyle;
   context.fill();
+};
+
+const fillRoundedRectWithShadow = (
+  context: CanvasContextLike,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number,
+  fillStyle: CanvasPaintLike,
+  shadowColor: string,
+  shadowBlur: number,
+  shadowOffsetY: number,
+): void => {
+  context.save();
+  context.shadowColor = shadowColor;
+  context.shadowBlur = shadowBlur;
+  context.shadowOffsetX = 0;
+  context.shadowOffsetY = shadowOffsetY;
+  fillRoundedRect(context, x, y, width, height, radius, fillStyle);
+  context.restore();
 };
 
 const strokeRoundedRect = (
@@ -214,10 +254,38 @@ const withAlpha = (value: string, alpha: number): string => {
   return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
 };
 
-const getContrastingTextColor = (backgroundColor: string): string => {
-  const { red, green, blue } = hexToRgb(backgroundColor);
-  const contrastBase = (red * 299 + green * 587 + blue * 114) / 1000;
-  return contrastBase >= 160 ? FALLBACK_TEXT_COLOR : FALLBACK_LIGHT_TEXT_COLOR;
+const mixHexColors = (base: string, target: string, targetRatio: number): string => {
+  const baseRgb = hexToRgb(base);
+  const targetRgb = hexToRgb(target);
+  const ratio = clamp(targetRatio, 0, 1);
+  const mixChannel = (baseChannel: number, targetChannel: number) =>
+    Math.round(baseChannel + (targetChannel - baseChannel) * ratio);
+
+  return `rgb(${mixChannel(baseRgb.red, targetRgb.red)}, ${mixChannel(baseRgb.green, targetRgb.green)}, ${mixChannel(baseRgb.blue, targetRgb.blue)})`;
+};
+
+const createSessionBlockGradient = (
+  context: CanvasContextLike,
+  x: number,
+  y: number,
+  height: number,
+  fillColor: string,
+): CanvasGradientLike => {
+  const gradient = context.createLinearGradient(x, y, x, y + height);
+  gradient.addColorStop(0, mixHexColors(fillColor, '#ffffff', 0.08));
+  gradient.addColorStop(1, mixHexColors(fillColor, '#000000', 0.16));
+  return gradient;
+};
+
+const createColumnGradient = (
+  context: CanvasContextLike,
+  y: number,
+  height: number,
+): CanvasGradientLike => {
+  const gradient = context.createLinearGradient(0, y, 0, y + height);
+  gradient.addColorStop(0, 'rgba(255, 255, 255, 0.72)');
+  gradient.addColorStop(1, 'rgba(255, 255, 255, 0.34)');
+  return gradient;
 };
 
 const truncateText = (context: CanvasContextLike, text: string, maxWidth: number): string => {
@@ -305,11 +373,29 @@ const getTimetableExportTheme = (): TimetableExportTheme => ({
   strokeStrong: readThemeValue('--stroke-strong', FALLBACK_STROKE_STRONG_COLOR),
   text: readThemeValue('--text', FALLBACK_TEXT_COLOR),
   textSecondary: readThemeValue('--text-secondary', FALLBACK_SUBTLE_TEXT_COLOR),
+  textTertiary: readThemeValue('--text-tertiary', FALLBACK_TERTIARY_TEXT_COLOR),
   accent: readThemeValue('--accent', FALLBACK_ACCENT_COLOR),
   accentSoft: readThemeValue('--accent-soft', FALLBACK_ACCENT_SOFT_COLOR),
   danger: readThemeValue('--danger', FALLBACK_DANGER_COLOR),
   dangerSoft: readThemeValue('--danger-soft', FALLBACK_DANGER_SOFT_COLOR),
 });
+
+const ensureExportFontLoaded = async (): Promise<void> => {
+  const fonts = (globalThis as RendererDomLike).document?.fonts;
+  if (!fonts) {
+    return;
+  }
+
+  try {
+    await Promise.all([
+      fonts.load(`500 13px ${EXPORT_FONT_STACK}`, '월요일 09:00'),
+      fonts.load(`600 14px ${EXPORT_FONT_STACK}`, '시간표'),
+      fonts.load(`700 30px ${EXPORT_FONT_STACK}`, '메인 플랜'),
+    ]);
+  } catch {
+    // Canvas rendering can still fall back to the configured system font stack.
+  }
+};
 
 const createCanvas = (width: number, height: number, renderScale: number): CanvasElementLike => {
   const dom = globalThis as RendererDomLike;
@@ -359,20 +445,20 @@ const drawBadgeRow = (
   theme: TimetableExportTheme,
 ): void => {
   context.save();
-  context.font = `600 15px ${EXPORT_FONT_STACK}`;
+  context.font = `600 12px ${EXPORT_FONT_STACK}`;
   context.textBaseline = 'middle';
 
   let cursorX = x;
   badges.forEach((label, index) => {
-    const paddingX = 14;
+    const paddingX = 10;
     const width = Math.ceil(context.measureText(label).width) + paddingX * 2;
     const fillStyle = index === 0 ? theme.accentSoft : theme.surfaceSoft;
     const textColor = index === 0 ? theme.accent : theme.textSecondary;
-    fillRoundedRect(context, cursorX, y, width, 36, 18, fillStyle);
-    strokeRoundedRect(context, cursorX, y, width, 36, 18, theme.stroke);
+    fillRoundedRect(context, cursorX, y, width, 30, 15, fillStyle);
+    strokeRoundedRect(context, cursorX, y, width, 30, 15, theme.stroke);
     context.fillStyle = textColor;
-    context.fillText(label, cursorX + paddingX, y + 18);
-    cursorX += width + 10;
+    context.fillText(label, cursorX + paddingX, y + 15);
+    cursorX += width + 8;
   });
 
   context.restore();
@@ -387,40 +473,20 @@ const drawDayHeaders = (
   context.save();
   context.textBaseline = 'middle';
 
-  fillRoundedRect(
-    context,
-    metrics.outerPaddingX + metrics.cardPadding,
-    headerY,
-    metrics.timeAxisWidth,
-    metrics.dayHeaderHeight,
-    18,
-    theme.surfaceSoft,
-  );
-  strokeRoundedRect(
-    context,
-    metrics.outerPaddingX + metrics.cardPadding,
-    headerY,
-    metrics.timeAxisWidth,
-    metrics.dayHeaderHeight,
-    18,
-    theme.stroke,
-  );
-  context.font = `700 16px ${EXPORT_FONT_STACK}`;
-  context.fillStyle = theme.textSecondary;
-  context.fillText('Time', metrics.outerPaddingX + metrics.cardPadding + 22, headerY + metrics.dayHeaderHeight / 2);
+  context.font = `700 10px ${EXPORT_FONT_STACK}`;
+  context.fillStyle = theme.textTertiary;
+  context.fillText('TIME', metrics.outerPaddingX + metrics.cardPadding + 2, headerY + metrics.dayHeaderHeight / 2);
 
   TIMETABLE_DAY_ORDER.forEach((day, index) => {
     const columnX = getDayColumnX(index, metrics);
-    fillRoundedRect(context, columnX, headerY, metrics.dayColumnWidth, metrics.dayHeaderHeight, 18, theme.surfaceSoft);
-    strokeRoundedRect(context, columnX, headerY, metrics.dayColumnWidth, metrics.dayHeaderHeight, 18, theme.stroke);
 
-    context.font = `700 20px ${EXPORT_FONT_STACK}`;
+    context.font = `700 18px ${EXPORT_FONT_STACK}`;
     context.fillStyle = theme.text;
-    context.fillText(DAY_LABELS[day].short, columnX + 18, headerY + 28);
+    context.fillText(DAY_LABELS[day].short, columnX + 6, headerY + 23);
 
-    context.font = `500 13px ${EXPORT_FONT_STACK}`;
-    context.fillStyle = theme.textSecondary;
-    context.fillText(DAY_LABELS[day].english, columnX + 18, headerY + 52);
+    context.font = `500 11px ${EXPORT_FONT_STACK}`;
+    context.fillStyle = theme.textTertiary;
+    context.fillText(DAY_LABELS[day].english, columnX + 6, headerY + 43);
   });
 
   context.restore();
@@ -438,28 +504,21 @@ const drawGrid = (
 
   TIMETABLE_DAY_ORDER.forEach((_day, index) => {
     const columnX = getDayColumnX(index, metrics);
-    fillRoundedRect(context, columnX, bodyY, metrics.dayColumnWidth, metrics.gridHeight, 22, theme.surface);
-    strokeRoundedRect(context, columnX, bodyY, metrics.dayColumnWidth, metrics.gridHeight, 22, theme.stroke);
+    const columnGradient = createColumnGradient(context, bodyY, metrics.gridHeight);
+    fillRoundedRectWithShadow(
+      context,
+      columnX,
+      bodyY,
+      metrics.dayColumnWidth,
+      metrics.gridHeight,
+      18,
+      columnGradient,
+      'rgba(79, 97, 150, 0.06)',
+      8,
+      3,
+    );
+    strokeRoundedRect(context, columnX, bodyY, metrics.dayColumnWidth, metrics.gridHeight, 18, theme.stroke, 0.75);
   });
-
-  fillRoundedRect(
-    context,
-    metrics.outerPaddingX + metrics.cardPadding,
-    bodyY,
-    metrics.timeAxisWidth,
-    metrics.gridHeight,
-    22,
-    theme.surface,
-  );
-  strokeRoundedRect(
-    context,
-    metrics.outerPaddingX + metrics.cardPadding,
-    bodyY,
-    metrics.timeAxisWidth,
-    metrics.gridHeight,
-    22,
-    theme.stroke,
-  );
 
   context.font = `600 13px ${EXPORT_FONT_STACK}`;
   for (let minutes = range.startMinutes; minutes <= range.endMinutes; minutes += 60) {
@@ -474,26 +533,26 @@ const drawGrid = (
       TIMETABLE_DAY_ORDER.forEach((_day, index) => {
         const columnX = getDayColumnX(index, metrics);
         context.beginPath();
-        context.moveTo(columnX + 14, lineY + 0.5);
-        context.lineTo(columnX + metrics.dayColumnWidth - 14, lineY + 0.5);
+        context.moveTo(columnX + 8, lineY + 0.5);
+        context.lineTo(columnX + metrics.dayColumnWidth - 8, lineY + 0.5);
         context.lineWidth = 1;
-        context.strokeStyle = theme.stroke;
+        context.strokeStyle = FALLBACK_GRID_LINE_COLOR;
         context.stroke();
       });
     }
 
-    context.fillStyle = theme.textSecondary;
-    context.fillText(minutesToTime(minutes), metrics.outerPaddingX + metrics.cardPadding + 18, labelY);
+    context.fillStyle = theme.textTertiary;
+    context.fillText(minutesToTime(minutes), metrics.outerPaddingX + metrics.cardPadding + 2, labelY);
   }
 
   context.restore();
 };
 
 const getSessionTextLayout = (blockHeight: number, blockWidth: number) => ({
-  titleLines: blockHeight >= 112 && blockWidth >= 160 ? 2 : 1,
-  showTime: blockHeight >= 68,
-  showLocation: blockHeight >= 90 && blockWidth >= 150,
-  showConflictChip: blockHeight >= 122 && blockWidth >= 162,
+  titleLines: blockHeight >= 92 && blockWidth >= 82 ? 2 : 1,
+  showTime: blockHeight >= 64 && blockWidth >= 50,
+  showLocation: blockHeight >= 104 && blockWidth >= 72,
+  showConflictChip: blockHeight >= 132 && blockWidth >= 88,
 });
 
 const drawSessionBlocks = (
@@ -514,7 +573,7 @@ const drawSessionBlocks = (
     sessions.forEach((session) => {
       const accent = sanitizeColor(session.courseColor);
       const x = columnX + (session.leftPercent / 100) * metrics.dayColumnWidth + metrics.sessionInsetX;
-      const width = metrics.dayColumnWidth * (session.widthPercent / 100) - 10;
+      const width = metrics.dayColumnWidth * (session.widthPercent / 100) - metrics.sessionInsetX * 2;
       const y =
         metrics.outerPaddingY +
         metrics.cardPadding +
@@ -528,33 +587,46 @@ const drawSessionBlocks = (
         (session.endMinutes - session.startMinutes) * metrics.pixelsPerMinute - 8,
       );
       const fillColor = session.isConflict ? theme.danger : accent;
-      const borderColor = session.isConflict ? theme.danger : accent;
-      const titleColor = getContrastingTextColor(fillColor);
-      const metaColor = titleColor === FALLBACK_LIGHT_TEXT_COLOR ? 'rgba(255, 255, 255, 0.86)' : FALLBACK_SUBTLE_TEXT_COLOR;
-      const contentX = x + 14;
-      let contentY = y + 14;
-      const contentWidth = Math.max(44, width - 28);
+      const titleColor = FALLBACK_LIGHT_TEXT_COLOR;
+      const metaColor = 'rgba(255, 255, 255, 0.86)';
+      const contentX = x + 10;
+      let contentY = y + 10;
+      const contentWidth = Math.max(24, width - 20);
       const textLayout = getSessionTextLayout(height, width);
+      const blockGradient = createSessionBlockGradient(context, x, y, height, fillColor);
 
-      fillRoundedRect(context, x, y, width, height, 18, fillColor);
-      strokeRoundedRect(context, x, y, width, height, 18, borderColor, session.isConflict ? 1.5 : 1);
+      fillRoundedRectWithShadow(
+        context,
+        x,
+        y,
+        width,
+        height,
+        16,
+        blockGradient,
+        withAlpha(fillColor, 0.18),
+        10,
+        5,
+      );
+      if (session.isConflict) {
+        strokeRoundedRect(context, x, y, width, height, 16, 'rgba(255, 255, 255, 0.82)', 1.5);
+      }
 
-      context.font = `700 16px ${EXPORT_FONT_STACK}`;
+      context.font = `700 18px ${EXPORT_FONT_STACK}`;
       const titleLines = wrapText(context, session.courseTitle, contentWidth, textLayout.titleLines);
       drawTextBlock(context, titleLines, contentX, contentY, 20, titleColor);
-      contentY += titleLines.length * 20 + 8;
+      contentY += titleLines.length * 20 + 5;
 
       if (textLayout.showTime) {
-        context.font = `600 13px ${EXPORT_FONT_STACK}`;
+        context.font = `600 14px ${EXPORT_FONT_STACK}`;
         drawTextBlock(
           context,
           [truncateText(context, `${session.start}–${session.end}`, contentWidth)],
           contentX,
           contentY,
-          18,
+          17,
           metaColor,
         );
-        contentY += 22;
+        contentY += 20;
       }
 
       if (textLayout.showLocation) {
@@ -572,14 +644,14 @@ const drawSessionBlocks = (
       if (session.isConflict && textLayout.showConflictChip) {
         context.font = `700 11px ${EXPORT_FONT_STACK}`;
         const label = '시간 겹침';
-        const chipWidth = Math.ceil(context.measureText(label).width) + 16;
-        const chipHeight = 24;
-        const chipX = x + width - chipWidth - 12;
-        const chipY = y + height - chipHeight - 12;
-        fillRoundedRect(context, chipX, chipY, chipWidth, chipHeight, 12, withAlpha(theme.danger, 0.16));
-        context.fillStyle = theme.danger;
+        const chipWidth = Math.min(width - 20, Math.ceil(context.measureText(label).width) + 14);
+        const chipHeight = 22;
+        const chipX = x + 10;
+        const chipY = y + height - chipHeight - 10;
+        fillRoundedRect(context, chipX, chipY, chipWidth, chipHeight, 11, 'rgba(255, 255, 255, 0.18)');
+        context.fillStyle = FALLBACK_LIGHT_TEXT_COLOR;
         context.textBaseline = 'middle';
-        context.fillText(label, chipX + 8, chipY + chipHeight / 2);
+        context.fillText(label, chipX + 7, chipY + chipHeight / 2);
         context.textBaseline = 'top';
       }
     });
@@ -592,6 +664,33 @@ export const getTimetableJpegFileName = (boardName: string, now = new Date()): s
   const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   const safeBoardName = sanitizeFileNameSegment(boardName) || 'timetable';
   return `soosta-timetable-${safeBoardName}-${date}.jpg`;
+};
+
+export const getTimetableJpegExportRange = (
+  positionedSessions: readonly Pick<PositionedSession, 'startMinutes' | 'endMinutes'>[],
+  bounds: TimetableExportRange,
+): TimetableExportRange => {
+  if (positionedSessions.length === 0) {
+    return bounds;
+  }
+
+  const earliestStart = Math.min(...positionedSessions.map((session) => session.startMinutes));
+  const latestEnd = Math.max(...positionedSessions.map((session) => session.endMinutes));
+  let startMinutes = Math.max(
+    bounds.startMinutes,
+    Math.floor((earliestStart - EXPORT_RANGE_CONTEXT_MINUTES) / 60) * 60,
+  );
+  let endMinutes = Math.min(
+    bounds.endMinutes,
+    Math.ceil((latestEnd + EXPORT_RANGE_CONTEXT_MINUTES) / 60) * 60,
+  );
+
+  if (endMinutes - startMinutes < EXPORT_MINIMUM_RANGE_MINUTES) {
+    endMinutes = Math.min(bounds.endMinutes, startMinutes + EXPORT_MINIMUM_RANGE_MINUTES);
+    startMinutes = Math.max(bounds.startMinutes, endMinutes - EXPORT_MINIMUM_RANGE_MINUTES);
+  }
+
+  return { startMinutes, endMinutes };
 };
 
 export const getTimetableJpegExportMetrics = (
@@ -641,6 +740,8 @@ export const renderTimetableToJpegBytes = async ({
   range,
   minimumSessionBlockHeight = 44,
 }: TimetableJpegExportPayload): Promise<Uint8Array> => {
+  await ensureExportFontLoaded();
+
   const minuteSpan = range.endMinutes - range.startMinutes;
   const metrics = getTimetableJpegExportMetrics(minuteSpan, TIMETABLE_DAY_ORDER.length);
   const theme = getTimetableExportTheme();
@@ -651,24 +752,39 @@ export const renderTimetableToJpegBytes = async ({
   }
 
   context.scale(metrics.renderScale, metrics.renderScale);
-  context.fillStyle = theme.background;
+  const backgroundGradient = context.createLinearGradient(0, 0, metrics.canvasWidth, metrics.canvasHeight);
+  backgroundGradient.addColorStop(0, '#fbfcff');
+  backgroundGradient.addColorStop(0.4, '#f4f7ff');
+  backgroundGradient.addColorStop(1, theme.background);
+  context.fillStyle = backgroundGradient;
   context.fillRect(0, 0, metrics.canvasWidth, metrics.canvasHeight);
 
-  fillRoundedRect(context, metrics.outerPaddingX, metrics.outerPaddingY, metrics.cardWidth, metrics.cardHeight, 32, theme.surface);
+  fillRoundedRectWithShadow(
+    context,
+    metrics.outerPaddingX,
+    metrics.outerPaddingY,
+    metrics.cardWidth,
+    metrics.cardHeight,
+    28,
+    theme.surface,
+    'rgba(79, 97, 150, 0.11)',
+    24,
+    8,
+  );
   strokeRoundedRect(
     context,
     metrics.outerPaddingX,
     metrics.outerPaddingY,
     metrics.cardWidth,
     metrics.cardHeight,
-    32,
-    theme.strokeStrong,
-    1.2,
+    28,
+    theme.stroke,
+    1,
   );
 
   const contentX = metrics.outerPaddingX + metrics.cardPadding;
   const titleY = metrics.outerPaddingY + metrics.cardPadding;
-  const badgesY = titleY + 50;
+  const badgesY = titleY + 42;
   const headerY = metrics.outerPaddingY + metrics.cardPadding + metrics.metaHeight + metrics.timetableTopGap;
   const bodyY = headerY + metrics.dayHeaderHeight;
 
@@ -678,7 +794,7 @@ export const renderTimetableToJpegBytes = async ({
   const titleWidth = context.measureText(board.name).width;
   context.fillText(board.name, contentX, titleY);
 
-  context.font = `600 16px ${EXPORT_FONT_STACK}`;
+  context.font = `600 15px ${EXPORT_FONT_STACK}`;
   context.fillStyle = theme.textSecondary;
   context.fillText(board.semester, contentX + titleWidth + 14, titleY + 10);
 
